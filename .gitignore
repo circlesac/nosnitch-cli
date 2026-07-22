@@ -1,0 +1,10 @@
+# build output
+/dist/
+/nosnitch
+/nosnitch.exe
+native/
+
+# coverage / temp
+*.out
+*.test
+.DS_Store
