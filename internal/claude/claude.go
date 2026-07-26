@@ -42,6 +42,7 @@ type SharedConversation struct {
 	URL              string `json:"url,omitempty"`
 	OrganizationUUID string `json:"organization_uuid,omitempty"`
 	SnapshotUUID     string `json:"snapshot_uuid,omitempty"`
+	ConversationUUID string `json:"conversation_uuid,omitempty"`
 }
 
 type CodeResult struct {
@@ -194,7 +195,18 @@ func CheckWeb(jar map[string]string) WebResult {
 			res.Reason = "Claude shared conversations read failed (HTTP " + strconv.Itoa(status) + ")"
 			continue
 		}
-		res.SharedConversations = append(res.SharedConversations, parseShares(body, org)...)
+		shares := parseShares(body, org)
+		for i := range shares {
+			if shares[i].Name != "" || shares[i].ConversationUUID == "" {
+				continue
+			}
+			path := "/api/organizations/" + org + "/chat_conversations/" +
+				shares[i].ConversationUUID + "?rendering_mode=raw"
+			if detailStatus, detailBody := webGet(client, path, cookie, agent); detailStatus == 200 {
+				shares[i].Name = parseConversationName(detailBody)
+			}
+		}
+		res.SharedConversations = append(res.SharedConversations, shares...)
 	}
 	return res
 }
@@ -345,9 +357,24 @@ func parseShares(body []byte, organizationUUID string) []SharedConversation {
 			URL:              url,
 			OrganizationUUID: organizationUUID,
 			SnapshotUUID:     snapshotUUID,
+			ConversationUUID: firstString(row, "conversation_uuid"),
 		})
 	}
 	return out
+}
+
+func parseConversationName(body []byte) string {
+	var conversation struct {
+		Name  string `json:"name"`
+		Title string `json:"title"`
+	}
+	if json.Unmarshal(body, &conversation) != nil {
+		return ""
+	}
+	if conversation.Name != "" {
+		return conversation.Name
+	}
+	return conversation.Title
 }
 
 func firstString(row map[string]any, keys ...string) string {

@@ -26,6 +26,15 @@ func TestParseShares(t *testing.T) {
 	if got[0].OrganizationUUID != "org-1" || got[0].SnapshotUUID != "share-1" {
 		t.Fatalf("parseShares()[0] metadata = %#v", got[0])
 	}
+	if got[0].ConversationUUID != "conversation-1" {
+		t.Fatalf("parseShares()[0].ConversationUUID = %q", got[0].ConversationUUID)
+	}
+}
+
+func TestParseConversationName(t *testing.T) {
+	if got := parseConversationName([]byte(`{"name":"Greeting"}`)); got != "Greeting" {
+		t.Fatalf("parseConversationName() = %q", got)
+	}
 }
 
 func TestParseWrappedShares(t *testing.T) {
