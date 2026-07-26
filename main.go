@@ -31,8 +31,16 @@ func main() {
 	}
 	switch cmd {
 	case "status", "check":
+		if hasFlag("-h") || hasFlag("--help") {
+			usage()
+			return
+		}
 		os.Exit(runStatus(hasFlag("--json")))
 	case "off":
+		if hasFlag("-h") || hasFlag("--help") {
+			usage()
+			return
+		}
 		os.Exit(runOff(hasFlag("--yes")))
 	case "openai":
 		os.Exit(runProviderCommand("openai"))
@@ -92,16 +100,17 @@ Check exit codes:
 
 func runProviderCommand(provider string) int {
 	label := "OpenAI"
-	usageLine := "nosnitch openai training"
-	flagHint := " [--yes]"
 	if provider == "anthropic" {
 		label = "Claude"
-		usageLine = "nosnitch claude <training|unshare>"
-		flagHint = " [--yes]"
 	}
 	if len(os.Args) < 3 {
-		fmt.Fprintf(os.Stderr, "missing %s command\n\nUsage: %s%s\n", label, usageLine, flagHint)
+		fmt.Fprintf(os.Stderr, "missing %s command\n\n", label)
+		providerUsage(provider, os.Stderr)
 		return 2
+	}
+	if os.Args[2] == "help" || hasFlag("-h") || hasFlag("--help") {
+		providerUsage(provider, os.Stdout)
+		return 0
 	}
 	if os.Args[2] == "training" {
 		if provider == "openai" {
@@ -112,9 +121,26 @@ func runProviderCommand(provider string) int {
 	if os.Args[2] == "unshare" && provider == "anthropic" {
 		return runUnshare(hasFlag("--yes"))
 	}
-	fmt.Fprintf(os.Stderr, "unknown %s command: %s\n\nUsage: %s%s\n",
-		label, os.Args[2], usageLine, flagHint)
+	fmt.Fprintf(os.Stderr, "unknown %s command: %s\n\n", label, os.Args[2])
+	providerUsage(provider, os.Stderr)
 	return 2
+}
+
+func providerUsage(provider string, out *os.File) {
+	if provider == "anthropic" {
+		fmt.Fprint(out, `Usage:
+  nosnitch claude training [--yes]
+      Turn off Claude Account model improvement.
+
+  nosnitch claude unshare [--yes]
+      Remove public Claude links without changing training settings.
+`)
+		return
+	}
+	fmt.Fprint(out, `Usage:
+  nosnitch openai training [--yes]
+      Turn off OpenAI Account training settings.
+`)
 }
 
 type claudeSession struct {
@@ -218,14 +244,15 @@ type offOutcome struct {
 }
 
 func runOff(yes bool) int {
-	fmt.Println(c("nosnitch", bold), c("· turning off all account privacy exposure…", dim))
+	fmt.Println(c("nosnitch", bold), c("· reviewing all account privacy exposure…", dim))
 	fmt.Println()
 	claudeOutcome := turnOffClaude(yes)
 	if claudeOutcome.cancelled {
 		return 0
 	}
-	openAIOutcome := turnOffOpenAI()
-	return finishOff(mergeOutcomes(claudeOutcome, openAIOutcome))
+	openAIOutcome := turnOffOpenAI("nosnitch off")
+	return finishOff(mergeOutcomes(claudeOutcome, openAIOutcome),
+		"training and public-sharing exposure turned off")
 }
 
 func runOpenAIOff(yes bool) int {
@@ -234,7 +261,8 @@ func runOpenAIOff(yes bool) int {
 	}
 	fmt.Println(c("nosnitch", bold), c("· turning off OpenAI Account training…", dim))
 	fmt.Println()
-	return finishOff(turnOffOpenAI())
+	return finishOff(turnOffOpenAI("nosnitch openai training"),
+		"OpenAI Account training turned off")
 }
 
 func runClaudeTrainingOff(yes bool) int {
@@ -330,7 +358,7 @@ func confirm(prompt string) bool {
 	return false
 }
 
-func turnOffOpenAI() offOutcome {
+func turnOffOpenAI(retryCommand string) offOutcome {
 	outcome := offOutcome{}
 	fdaBlocked := false
 	for _, b := range cookies.Installed() {
@@ -363,7 +391,7 @@ func turnOffOpenAI() offOutcome {
 
 	if fdaBlocked {
 		fmt.Println(c("  ! Safari session found but couldn't be read — needs Full Disk Access.", yel))
-		fmt.Println(c("    Opening the setting; add your terminal, then re-run `nosnitch off`.", dim))
+		fmt.Println(c("    Opening the setting; add your terminal, then re-run `"+retryCommand+"`.", dim))
 		exec.Command("open", fdaSettingsURL).Run()
 		outcome.indeterminate = true
 	}
@@ -381,7 +409,7 @@ func mergeOutcomes(values ...offOutcome) offOutcome {
 	return merged
 }
 
-func finishOff(outcome offOutcome) int {
+func finishOff(outcome offOutcome, successMessage string) int {
 	if outcome.failed {
 		return 1
 	}
@@ -397,7 +425,7 @@ func finishOff(outcome offOutcome) int {
 		fmt.Println(c("  no supported account could be updated", yel))
 		return 2
 	}
-	fmt.Println(c("  ✓ training and public-sharing exposure turned off", grn))
+	fmt.Println(c("  ✓ "+successMessage, grn))
 	return 0
 }
 

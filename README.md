@@ -80,6 +80,8 @@ nosnitch claude training        # turn off Claude model improvement only
 nosnitch claude training --yes  # turn off without prompting
 nosnitch claude unshare         # remove only public Claude links
 nosnitch claude unshare --yes   # remove links without prompting
+nosnitch openai --help          # OpenAI-specific help
+nosnitch claude --help          # Claude-specific help
 ```
 
 `nosnitch off` disables supported OpenAI training settings, disables Claude's
@@ -98,4 +100,5 @@ additional browser profiles, Arc, and Linux/Windows cookie stores.
 ## Security note
 
 `nosnitch` reads sensitive local credentials to inspect your settings. Requests
-are read-only except when you explicitly run `nosnitch off`.
+are read-only unless you explicitly run `off`, a provider-specific `training`
+command, or `claude unshare`.
