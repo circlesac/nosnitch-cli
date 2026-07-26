@@ -67,6 +67,12 @@ type UnshareResult struct {
 	Failed  []SharedConversation `json:"failed,omitempty"`
 }
 
+type OffResult struct {
+	OK     bool   `json:"ok"`
+	Email  string `json:"email,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
 type localAccount struct {
 	OAuthAccount struct {
 		EmailAddress     string `json:"emailAddress"`
@@ -142,6 +148,45 @@ func CheckCode() CodeResult {
 	}
 	res.ModelImprovement = settings.GroveEnabled
 	return res
+}
+
+// OffCode disables the account-wide model-improvement preference used by
+// consumer Claude chats and Claude Code coding sessions.
+func OffCode() OffResult {
+	code := CheckCode()
+	if !code.OK {
+		return OffResult{Reason: code.Reason}
+	}
+	token, err := oauthToken()
+	if err != nil {
+		return OffResult{Email: code.Email, Reason: err.Error()}
+	}
+	req, _ := http.NewRequest(http.MethodPatch, apiBase+"/api/oauth/account/settings",
+		strings.NewReader(`{"grove_enabled":false}`))
+	req.Header = http.Header{
+		"accept":            {"application/json"},
+		"authorization":     {"Bearer " + token},
+		"anthropic-version": {"2023-06-01"},
+		"content-type":      {"application/json"},
+		"user-agent":        {userAgent},
+	}
+	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(),
+		tls_client.WithTimeoutSeconds(25), tls_client.WithClientProfile(profiles.Chrome_131))
+	if err != nil {
+		return OffResult{Email: code.Email, Reason: "could not create HTTP client: " + err.Error()}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return OffResult{Email: code.Email, Reason: "Claude setting update failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return OffResult{
+			Email:  code.Email,
+			Reason: "Claude setting update failed (HTTP " + strconv.Itoa(resp.StatusCode) + ")",
+		}
+	}
+	return OffResult{OK: true, Email: code.Email}
 }
 
 // CheckWeb reads account identity and public shared chats through the same

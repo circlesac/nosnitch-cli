@@ -32,7 +32,7 @@ func main() {
 	case "status", "check":
 		os.Exit(runStatus(hasFlag("--json")))
 	case "off":
-		os.Exit(runOff())
+		os.Exit(runOff(hasFlag("--yes")))
 	case "claude":
 		os.Exit(runClaudeCommand())
 	case "version", "-v", "--version":
@@ -63,7 +63,8 @@ func usage() {
 
 Usage:
   nosnitch            Show what's exposed to training or public sharing (status)
-  nosnitch off        Opt out — turn OpenAI training/data-sharing OFF
+  nosnitch off        Turn off training and remove public shares
+                       (--yes to skip share-removal confirmation)
   nosnitch claude unshare    Remove public Claude chat links
                               (--yes to skip confirmation)
   nosnitch status     Same as no args   (--json for machine output)
@@ -87,14 +88,15 @@ func runClaudeCommand() int {
 	}
 }
 
-func runUnshare(yes bool) int {
-	type session struct {
-		email  string
-		source string
-		jar    map[string]string
-		shares []claude.SharedConversation
-	}
-	var sessions []session
+type claudeSession struct {
+	email  string
+	source string
+	jar    map[string]string
+	shares []claude.SharedConversation
+}
+
+func discoverClaudeSessions() []claudeSession {
+	var sessions []claudeSession
 	seenAccounts := map[string]bool{}
 	for _, browser := range cookies.Installed() {
 		jar, err := browser.Claude()
@@ -107,12 +109,17 @@ func runUnshare(yes bool) int {
 		}
 		seenAccounts[result.Email] = true
 		if len(result.SharedConversations) > 0 {
-			sessions = append(sessions, session{
+			sessions = append(sessions, claudeSession{
 				email: result.Email, source: browser.Name, jar: jar,
 				shares: result.SharedConversations,
 			})
 		}
 	}
+	return sessions
+}
+
+func runUnshare(yes bool) int {
+	sessions := discoverClaudeSessions()
 	if len(sessions) == 0 {
 		fmt.Println(c("  ✓ no shared Claude chats found", grn))
 		return 0
@@ -171,11 +178,26 @@ func statusCode(rep account.Report) int {
 	return 0
 }
 
-func runOff() int {
-	fmt.Println(c("nosnitch", bold), c("· opting out of model training…", dim))
+func runOff(yes bool) int {
+	claudeSessions := discoverClaudeSessions()
+	sharedCount := 0
+	for _, current := range claudeSessions {
+		sharedCount += len(current.shares)
+	}
+	if sharedCount > 0 && !yes {
+		fmt.Printf("This will also remove %d public Claude share link(s). Continue? [y/N] ", sharedCount)
+		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Println("Cancelled.")
+			return 0
+		}
+	}
+
+	fmt.Println(c("nosnitch", bold), c("· turning off training and public sharing…", dim))
 	fmt.Println()
 
-	acted, fdaBlocked := false, false
+	acted, failed, fdaBlocked := false, false, false
 	for _, b := range cookies.Installed() {
 		jar, err := b.ChatGPT()
 		if err == cookies.ErrNeedFullDiskAccess {
@@ -202,20 +224,49 @@ func runOff() int {
 		fmt.Println()
 	}
 
+	claudeOff := claude.OffCode()
+	if claudeOff.OK {
+		acted = true
+		fmt.Printf("  %s  %s\n", c(claudeOff.Email, bold), c("Claude Account", dim))
+		field("Model improvement", "OFF", grn, "")
+		fmt.Println()
+	} else if claudeOff.Email != "" {
+		failed = true
+		fmt.Println(c("  ! Claude model improvement: "+claudeOff.Reason, yel))
+	}
+
+	removed, unshareFailed := 0, 0
+	for _, current := range claudeSessions {
+		result := claude.UnshareWith(current.jar, current.shares)
+		removed += len(result.Removed)
+		unshareFailed += len(result.Failed)
+	}
+	if removed > 0 {
+		acted = true
+		fmt.Println(c(fmt.Sprintf("  ✓ removed %d public Claude share link(s)", removed), grn))
+	}
+	if unshareFailed > 0 {
+		failed = true
+		fmt.Println(c(fmt.Sprintf("  ✗ failed to remove %d Claude share link(s)", unshareFailed), red))
+	}
+
 	if fdaBlocked {
 		fmt.Println(c("  ! Safari session found but couldn't be read — needs Full Disk Access.", yel))
 		fmt.Println(c("    Opening the setting; add your terminal, then re-run `nosnitch off`.", dim))
 		exec.Command("open", fdaSettingsURL).Run()
 	}
 
+	if failed {
+		return 1
+	}
 	if !acted {
 		if fdaBlocked {
 			return 2
 		}
-		fmt.Println(c("  no readable ChatGPT session found", yel))
+		fmt.Println(c("  no supported account could be updated", yel))
 		return 2
 	}
-	fmt.Println(c("  ✓ opted out — these accounts' data won't be used for training", grn))
+	fmt.Println(c("  ✓ training and public-sharing exposure turned off", grn))
 	return 0
 }
 
