@@ -70,12 +70,12 @@ curl -fsSL https://github.com/circlesac/nosnitch-cli/releases/latest/download/in
 ## Usage
 
 ```bash
-nosnitch check          # human-readable report
-nosnitch check --json   # machine-readable report
-nosnitch off            # turn off training and remove public shares
-nosnitch off --yes      # skip confirmation when public shares are found
-nosnitch claude unshare        # review and remove public Claude chat links
-nosnitch claude unshare --yes  # remove all detected links without prompting
+nosnitch check                  # human-readable account report
+nosnitch check --json           # machine-readable account report
+nosnitch off                    # clear all detected privacy exposure
+nosnitch off --yes              # skip public-link removal confirmation
+nosnitch claude unshare         # remove only public Claude links
+nosnitch claude unshare --yes   # remove links without prompting
 ```
 
 `nosnitch off` disables supported OpenAI training settings, disables Claude's

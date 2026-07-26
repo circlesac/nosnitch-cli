@@ -1,8 +1,8 @@
-// nosnitch — stop your coding agent from snitching your code to model training.
+// nosnitch checks and clears AI account training and public-sharing exposure.
 //
-//	nosnitch          show what's exposed (status)
-//	nosnitch off      opt out — turn training/data-sharing OFF
-//	nosnitch status   same as no args
+//	nosnitch                  show account privacy status
+//	nosnitch off              clear all detected exposure
+//	nosnitch claude unshare   remove only public Claude links
 package main
 
 import (
@@ -62,15 +62,22 @@ func usage() {
 	fmt.Print(`nosnitch — check AI account training and public sharing settings.
 
 Usage:
-  nosnitch            Show what's exposed to training or public sharing (status)
-  nosnitch off        Turn off training and remove public shares
-                       (--yes to skip share-removal confirmation)
-  nosnitch claude unshare    Remove public Claude chat links
-                              (--yes to skip confirmation)
-  nosnitch status     Same as no args   (--json for machine output)
+  nosnitch [check|status] [--json]
+      Show account training and public-sharing exposure.
+
+  nosnitch off [--yes]
+      Turn off supported training settings and remove public Claude links.
+      Confirms before removing links unless --yes is supplied.
+
+  nosnitch claude unshare [--yes]
+      Remove public Claude links without changing training settings.
+
   nosnitch version
 
-Status exit code: 0 = clean, 1 = training/sharing exposure found, 2 = indeterminate
+Check exit codes:
+  0  clean
+  1  training or public-sharing exposure found
+  2  indeterminate
 `)
 }
 
@@ -127,14 +134,17 @@ func runUnshare(yes bool) int {
 
 	total := 0
 	for _, current := range sessions {
-		fmt.Printf("  %s  %s\n", c(current.email, bold), c("via "+current.source, dim))
+		fmt.Println("  " + c("[Claude Account]", bold))
+		field("Account", current.email, "", "")
+		field("Discovered via", current.source, "", "")
 		for _, shared := range current.shares {
 			total++
-			fmt.Println("    " + shared.URL)
+			printSharedChat(shared)
 		}
+		fmt.Println()
 	}
 	if !yes {
-		fmt.Printf("\nRemove %d public Claude share link(s)? [y/N] ", total)
+		fmt.Printf("Remove %d public Claude share link(s)? [y/N] ", total)
 		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		answer = strings.TrimSpace(strings.ToLower(answer))
 		if answer != "y" && answer != "yes" {
@@ -185,7 +195,13 @@ func runOff(yes bool) int {
 		sharedCount += len(current.shares)
 	}
 	if sharedCount > 0 && !yes {
-		fmt.Printf("This will also remove %d public Claude share link(s). Continue? [y/N] ", sharedCount)
+		fmt.Println(c("Public Claude links to remove:", yel))
+		for _, current := range claudeSessions {
+			for _, shared := range current.shares {
+				printSharedChat(shared)
+			}
+		}
+		fmt.Printf("\nTurn off training and remove %d public link(s)? [y/N] ", sharedCount)
 		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		answer = strings.TrimSpace(strings.ToLower(answer))
 		if answer != "y" && answer != "yes" {
@@ -212,7 +228,9 @@ func runOff(yes bool) int {
 			continue
 		}
 		acted = true
-		fmt.Printf("  %s  %s\n", c(r.Email, bold), c("via "+b.Name, dim))
+		fmt.Println("  " + c("[OpenAI Account]", bold))
+		field("Account", r.Email, "", "")
+		field("Discovered via", b.Name, "", "")
 		for _, f := range chatgpt.TrainingFeatures {
 			state := r.Results[f.Key]
 			col := grn
@@ -227,7 +245,9 @@ func runOff(yes bool) int {
 	claudeOff := claude.OffCode()
 	if claudeOff.OK {
 		acted = true
-		fmt.Printf("  %s  %s\n", c(claudeOff.Email, bold), c("Claude Account", dim))
+		fmt.Println("  " + c("[Claude Account]", bold))
+		field("Account", claudeOff.Email, "", "")
+		field("Discovered via", "Claude Code", "", "")
 		field("Model improvement", "OFF", grn, "")
 		fmt.Println()
 	} else if claudeOff.Email != "" {
@@ -369,11 +389,8 @@ func printStatus(rep account.Report) {
 				field("Shared chats", fmt.Sprintf("%d", count), color, sharedNote(count))
 			}
 			for _, shared := range a.SharedConversations {
-				name := shared.Name
-				if name == "" {
-					name = "(untitled)"
-				}
-				fmt.Printf("      %s  %s\n", c(name, yel), c(shared.URL, dim))
+				fmt.Print("  ")
+				printSharedChat(shared)
 			}
 		}
 		fmt.Println()
@@ -400,4 +417,12 @@ func sharedNote(count int) string {
 		return "publicly accessible links found"
 	}
 	return ""
+}
+
+func printSharedChat(shared claude.SharedConversation) {
+	name := shared.Name
+	if name == "" {
+		name = "(untitled)"
+	}
+	fmt.Printf("    %s  %s\n", c(name, yel), c(shared.URL, dim))
 }
