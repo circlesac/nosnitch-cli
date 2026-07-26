@@ -25,6 +25,18 @@ const (
 		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
+var webProfiles = []struct {
+	Profile string
+	Agent   string
+}{
+	{"chrome_146", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+		"(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"},
+	{"chrome_146", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+		"(KHTML, like Gecko) Chrome/148.0.0.0 Electron/42.7.0 Safari/537.36"},
+	{"safari_16_0", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+		"AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15"},
+}
+
 type SharedConversation struct {
 	Name string `json:"name,omitempty"`
 	URL  string `json:"url,omitempty"`
@@ -127,15 +139,31 @@ func CheckCode() CodeResult {
 // CheckWeb reads account identity and public shared chats through the same
 // read-only endpoints used by claude.ai.
 func CheckWeb(jar map[string]string) WebResult {
-	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(),
-		tls_client.WithTimeoutSeconds(25), tls_client.WithClientProfile(profiles.Chrome_131))
-	if err != nil {
-		return WebResult{Reason: "could not create HTTP client: " + err.Error()}
-	}
 	cookie := cookieHeader(jar)
-	status, body := webGet(client, "/api/account", cookie)
+	var client tls_client.HttpClient
+	var agent string
+	var status int
+	var body []byte
+	for _, candidate := range webProfiles {
+		profile, ok := profiles.MappedTLSClients[candidate.Profile]
+		if !ok {
+			continue
+		}
+		var err error
+		client, err = tls_client.NewHttpClient(tls_client.NewNoopLogger(),
+			tls_client.WithTimeoutSeconds(25), tls_client.WithClientProfile(profile))
+		if err != nil {
+			continue
+		}
+		agent = candidate.Agent
+		status, body = webGet(client, "/api/account?statsig_hashing_algorithm=djb2", cookie, agent)
+		if status == 200 {
+			break
+		}
+	}
 	if status != 200 {
-		return WebResult{Reason: "Claude session expired or blocked (HTTP " + strconv.Itoa(status) + ")"}
+		return WebResult{Reason: "Claude session expired or blocked (HTTP " +
+			strconv.Itoa(status) + apiErrorSuffix(body) + ")"}
 	}
 	var acct struct {
 		EmailAddress string `json:"email_address"`
@@ -160,7 +188,7 @@ func CheckWeb(jar map[string]string) WebResult {
 	}
 	// The account payload has changed shape over time. The organizations endpoint
 	// is the authoritative fallback and is also used by the current web app.
-	if orgStatus, orgBody := webGet(client, "/api/organizations", cookie); orgStatus == 200 {
+	if orgStatus, orgBody := webGet(client, "/api/organizations", cookie, agent); orgStatus == 200 {
 		var organizations []struct {
 			UUID string `json:"uuid"`
 		}
@@ -173,7 +201,7 @@ func CheckWeb(jar map[string]string) WebResult {
 		}
 	}
 	for org := range orgs {
-		status, body = webGet(client, "/api/organizations/"+org+"/shares", cookie)
+		status, body = webGet(client, "/api/organizations/"+org+"/shares", cookie, agent)
 		if status != 200 {
 			res.OK = false
 			res.Reason = "Claude shared conversations read failed (HTTP " + strconv.Itoa(status) + ")"
@@ -205,7 +233,7 @@ func planName(orgType string) string {
 	return strings.ReplaceAll(orgType, "_", " ")
 }
 
-func webGet(client tls_client.HttpClient, path, cookie string) (int, []byte) {
+func webGet(client tls_client.HttpClient, path, cookie, agent string) (int, []byte) {
 	req, err := http.NewRequest(http.MethodGet, webBase+path, nil)
 	if err != nil {
 		return 0, nil
@@ -213,7 +241,7 @@ func webGet(client tls_client.HttpClient, path, cookie string) (int, []byte) {
 	req.Header = http.Header{
 		"accept":            {"application/json"},
 		"referer":           {webBase + "/chats"},
-		"user-agent":        {userAgent},
+		"user-agent":        {agent},
 		"cookie":            {cookie},
 		http.HeaderOrderKey: {"accept", "referer", "user-agent", "cookie"},
 	}
@@ -264,6 +292,18 @@ func firstString(row map[string]any, keys ...string) string {
 		if value, ok := row[key].(string); ok {
 			return value
 		}
+	}
+	return ""
+}
+
+func apiErrorSuffix(body []byte) string {
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) == nil && payload.Error.Message != "" {
+		return ": " + payload.Error.Message
 	}
 	return ""
 }

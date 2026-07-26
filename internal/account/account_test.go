@@ -28,3 +28,11 @@ func TestClaudeAccountRisk(t *testing.T) {
 		})
 	}
 }
+
+func TestAppendSharedUnique(t *testing.T) {
+	shared := claude.SharedConversation{URL: "https://claude.ai/share/test"}
+	got := appendSharedUnique([]claude.SharedConversation{shared}, []claude.SharedConversation{shared})
+	if len(got) != 1 {
+		t.Fatalf("len(appendSharedUnique()) = %d", len(got))
+	}
+}

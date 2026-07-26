@@ -148,7 +148,7 @@ func Gather() Report {
 		if claudeRes.ModelImprovement != nil {
 			a.ModelImprovement = claudeRes.ModelImprovement
 		}
-		a.SharedConversations = append(a.SharedConversations, claudeRes.SharedConversations...)
+		a.SharedConversations = appendSharedUnique(a.SharedConversations, claudeRes.SharedConversations)
 		a.SharedChatsChecked = true
 	}
 
@@ -177,4 +177,19 @@ func hasBlocked(values []Blocked, source string) bool {
 		}
 	}
 	return false
+}
+
+func appendSharedUnique(values, additions []claude.SharedConversation) []claude.SharedConversation {
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		seen[value.URL] = true
+	}
+	for _, addition := range additions {
+		if seen[addition.URL] {
+			continue
+		}
+		seen[addition.URL] = true
+		values = append(values, addition)
+	}
+	return values
 }

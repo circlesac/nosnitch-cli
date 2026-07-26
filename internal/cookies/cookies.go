@@ -43,6 +43,7 @@ var known = []Browser{
 	{"Chrome", chromium, "Library/Application Support/Google/Chrome/Default/Cookies", "Chrome Safe Storage"},
 	{"Edge", chromium, "Library/Application Support/Microsoft Edge/Default/Cookies", "Microsoft Edge Safe Storage"},
 	{"Brave", chromium, "Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies", "Brave Safe Storage"},
+	{"Claude Desktop", chromium, "Library/Application Support/Claude/Cookies", "Claude Safe Storage"},
 	{"Safari", safari, "Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies", ""},
 }
 

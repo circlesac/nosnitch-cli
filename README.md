@@ -38,7 +38,7 @@ Exit code: `0` clean · `1` training or public-sharing exposure found ·
 | **OpenAI Account** | Codex CLI | Account, plan, and API data-sharing incentives enrollment |
 | **OpenAI Account** | ChatGPT browser session | ChatGPT and Codex model-training settings |
 | **Claude Account** | Claude Code | Account, plan, and the account-wide “Help improve Claude” setting |
-| **Claude Account** | Claude browser session | Publicly shared Claude conversations |
+| **Claude Account** | Claude Desktop or browser session | Publicly shared Claude conversations |
 
 The Claude model-improvement preference applies to consumer Claude chats and
 Claude Code coding sessions. Commercial Claude plans and API usage follow their
@@ -52,7 +52,7 @@ organization's commercial data policy.
 - **Claude Code**: reads account metadata from `~/.claude.json`, then uses the
   OAuth token stored in macOS Keychain for a read-only request to
   `/api/oauth/account/settings`.
-- **Claude**: borrows the logged-in browser session and reads the same
+- **Claude**: borrows the logged-in Claude Desktop or browser session and reads the same
   `/api/organizations/{id}/shares` endpoint used by claude.ai.
 
 Browser cookies are decrypted locally using macOS Keychain. Tokens and cookies
