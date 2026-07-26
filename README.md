@@ -73,19 +73,21 @@ curl -fsSL https://github.com/circlesac/nosnitch-cli/releases/latest/download/in
 nosnitch check                  # human-readable account report
 nosnitch check --json           # machine-readable account report
 nosnitch off                    # clear all detected privacy exposure
-nosnitch off --yes              # skip public-link removal confirmation
+nosnitch off --yes              # skip confirmation
 nosnitch openai training        # turn off OpenAI training settings only
+nosnitch openai training --yes  # turn off without prompting
 nosnitch claude training        # turn off Claude model improvement only
+nosnitch claude training --yes  # turn off without prompting
 nosnitch claude unshare         # remove only public Claude links
 nosnitch claude unshare --yes   # remove links without prompting
 ```
 
 `nosnitch off` disables supported OpenAI training settings, disables Claude's
 account-wide model-improvement setting, and removes detected public Claude chat
-links. It asks for confirmation when public links exist unless `--yes` is
-provided. The provider-specific `training` commands change only that
-provider's training settings. `nosnitch claude unshare` changes only Claude's
-public links.
+links. Every command that changes account state asks for confirmation unless
+`--yes` is provided. The provider-specific `training` commands change only
+that provider's training settings. `nosnitch claude unshare` changes only
+Claude's public links.
 
 ## Platform support
 

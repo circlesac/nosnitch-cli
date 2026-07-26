@@ -70,12 +70,12 @@ Usage:
 
   nosnitch off [--yes]
       Turn off supported training settings and remove public Claude links.
-      Confirms before removing links unless --yes is supplied.
+      Confirms before changing account state unless --yes is supplied.
 
-  nosnitch openai training
+  nosnitch openai training [--yes]
       Turn off OpenAI Account training settings.
 
-  nosnitch claude training
+  nosnitch claude training [--yes]
       Turn off Claude Account model improvement.
 
   nosnitch claude unshare [--yes]
@@ -93,7 +93,7 @@ Check exit codes:
 func runProviderCommand(provider string) int {
 	label := "OpenAI"
 	usageLine := "nosnitch openai training"
-	flagHint := ""
+	flagHint := " [--yes]"
 	if provider == "anthropic" {
 		label = "Claude"
 		usageLine = "nosnitch claude <training|unshare>"
@@ -105,9 +105,9 @@ func runProviderCommand(provider string) int {
 	}
 	if os.Args[2] == "training" {
 		if provider == "openai" {
-			return runOpenAIOff()
+			return runOpenAIOff(hasFlag("--yes"))
 		}
-		return runClaudeTrainingOff()
+		return runClaudeTrainingOff(hasFlag("--yes"))
 	}
 	if os.Args[2] == "unshare" && provider == "anthropic" {
 		return runUnshare(hasFlag("--yes"))
@@ -228,13 +228,19 @@ func runOff(yes bool) int {
 	return finishOff(mergeOutcomes(claudeOutcome, openAIOutcome))
 }
 
-func runOpenAIOff() int {
+func runOpenAIOff(yes bool) int {
+	if !yes && !confirm("Turn off OpenAI Account training settings?") {
+		return 0
+	}
 	fmt.Println(c("nosnitch", bold), c("· turning off OpenAI Account training…", dim))
 	fmt.Println()
 	return finishOff(turnOffOpenAI())
 }
 
-func runClaudeTrainingOff() int {
+func runClaudeTrainingOff(yes bool) int {
+	if !yes && !confirm("Turn off Claude Account model improvement?") {
+		return 0
+	}
 	fmt.Println(c("nosnitch", bold), c("· turning off Claude Account training…", dim))
 	fmt.Println()
 	result := claude.OffCode()
@@ -261,18 +267,21 @@ func turnOffClaude(yes bool) offOutcome {
 	for _, current := range claudeSessions {
 		sharedCount += len(current.shares)
 	}
-	if sharedCount > 0 && !yes {
-		fmt.Println(c("Public Claude links to remove:", yel))
-		for _, current := range claudeSessions {
-			for _, shared := range current.shares {
-				printSharedChat(shared)
+	if !yes {
+		if sharedCount > 0 {
+			fmt.Println(c("Public Claude links to remove:", yel))
+			for _, current := range claudeSessions {
+				for _, shared := range current.shares {
+					printSharedChat(shared)
+				}
 			}
+			fmt.Println()
 		}
-		fmt.Printf("\nTurn off training and remove %d public link(s)? [y/N] ", sharedCount)
-		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		answer = strings.TrimSpace(strings.ToLower(answer))
-		if answer != "y" && answer != "yes" {
-			fmt.Println("Cancelled.")
+		prompt := "Turn off all supported training settings?"
+		if sharedCount > 0 {
+			prompt = fmt.Sprintf("Turn off all supported training settings and remove %d public link(s)?", sharedCount)
+		}
+		if !confirm(prompt) {
 			return offOutcome{cancelled: true}
 		}
 	}
@@ -308,6 +317,17 @@ func turnOffClaude(yes bool) offOutcome {
 		fmt.Println(c(fmt.Sprintf("  ✗ failed to remove %d Claude share link(s)", unshareFailed), red))
 	}
 	return outcome
+}
+
+func confirm(prompt string) bool {
+	fmt.Printf("%s [y/N] ", prompt)
+	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	if answer == "y" || answer == "yes" {
+		return true
+	}
+	fmt.Println("Cancelled.")
+	return false
 }
 
 func turnOffOpenAI() offOutcome {
