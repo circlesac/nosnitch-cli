@@ -19,13 +19,13 @@ jobs:
       - name: Calculate version
         id: bump
         run: |
-          VERSION=$(npx --yes @circlesac/oneup version --source git --target version.json | tail -1)
+          VERSION=$(npx --yes @circlesac/oneup version --target version.go | tail -1)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
           name: versioned-files
-          path: version.json
+          path: version.go
 
   build:
     needs: version
@@ -44,13 +44,17 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: versioned-files
+
       - name: Build
         env:
           GOOS: darwin
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          go build -ldflags "-s -w -X main.version=${{ needs.version.outputs.version }}" -o nosnitch .
+          go build -ldflags "-s -w" -o nosnitch .
           tar czf ${{ matrix.name }}.tar.gz nosnitch
 
       - uses: actions/upload-artifact@v4
