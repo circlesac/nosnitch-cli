@@ -18,8 +18,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	_ "modernc.org/sqlite"
 	"golang.org/x/crypto/pbkdf2"
+	_ "modernc.org/sqlite"
 )
 
 // ErrNeedFullDiskAccess means the cookie store exists but macOS blocked the read.
@@ -43,6 +43,7 @@ var known = []Browser{
 	{"Chrome", chromium, "Library/Application Support/Google/Chrome/Default/Cookies", "Chrome Safe Storage"},
 	{"Edge", chromium, "Library/Application Support/Microsoft Edge/Default/Cookies", "Microsoft Edge Safe Storage"},
 	{"Brave", chromium, "Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies", "Brave Safe Storage"},
+	{"Claude Desktop", chromium, "Library/Application Support/Claude/Cookies", "Claude Safe Storage"},
 	{"Safari", safari, "Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies", ""},
 }
 
@@ -59,17 +60,21 @@ func Installed() []Browser {
 	return out
 }
 
-// ChatGPT returns decrypted chatgpt.com cookies for this browser.
-// Returns (nil, nil) when the browser has no chatgpt.com session, and
+// Cookies returns decrypted cookies matching hostLike for this browser.
+// Returns (nil, nil) when the browser has no matching session, and
 // (nil, ErrNeedFullDiskAccess) when macOS blocks the read (Safari).
-func (b Browser) ChatGPT() (map[string]string, error) {
+func (b Browser) Cookies(hostLike string) (map[string]string, error) {
 	if b.kind == safari {
-		return safariChatGPT(b.path())
+		return safariCookies(b.path(), hostLike)
 	}
-	return chromiumChatGPT(b, "chatgpt.com")
+	return chromiumCookies(b, hostLike)
 }
 
-func chromiumChatGPT(b Browser, hostLike string) (map[string]string, error) {
+func (b Browser) ChatGPT() (map[string]string, error) { return b.Cookies("chatgpt.com") }
+
+func (b Browser) Claude() (map[string]string, error) { return b.Cookies("claude.ai") }
+
+func chromiumCookies(b Browser, hostLike string) (map[string]string, error) {
 	db, cleanup, err := openCopy(b.path())
 	if err != nil {
 		return nil, err
