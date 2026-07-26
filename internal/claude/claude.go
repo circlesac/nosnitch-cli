@@ -38,8 +38,10 @@ var webProfiles = []struct {
 }
 
 type SharedConversation struct {
-	Name string `json:"name,omitempty"`
-	URL  string `json:"url,omitempty"`
+	Name             string `json:"name,omitempty"`
+	URL              string `json:"url,omitempty"`
+	OrganizationUUID string `json:"organization_uuid,omitempty"`
+	SnapshotUUID     string `json:"snapshot_uuid,omitempty"`
 }
 
 type CodeResult struct {
@@ -57,6 +59,11 @@ type WebResult struct {
 	Email               string               `json:"email,omitempty"`
 	ModelImprovement    *bool                `json:"model_improvement,omitempty"`
 	SharedConversations []SharedConversation `json:"shared_conversations,omitempty"`
+}
+
+type UnshareResult struct {
+	Removed []SharedConversation `json:"removed,omitempty"`
+	Failed  []SharedConversation `json:"failed,omitempty"`
 }
 
 type localAccount struct {
@@ -140,27 +147,7 @@ func CheckCode() CodeResult {
 // read-only endpoints used by claude.ai.
 func CheckWeb(jar map[string]string) WebResult {
 	cookie := cookieHeader(jar)
-	var client tls_client.HttpClient
-	var agent string
-	var status int
-	var body []byte
-	for _, candidate := range webProfiles {
-		profile, ok := profiles.MappedTLSClients[candidate.Profile]
-		if !ok {
-			continue
-		}
-		var err error
-		client, err = tls_client.NewHttpClient(tls_client.NewNoopLogger(),
-			tls_client.WithTimeoutSeconds(25), tls_client.WithClientProfile(profile))
-		if err != nil {
-			continue
-		}
-		agent = candidate.Agent
-		status, body = webGet(client, "/api/account?statsig_hashing_algorithm=djb2", cookie, agent)
-		if status == 200 {
-			break
-		}
-	}
+	client, agent, status, body := findWebSession(cookie)
 	if status != 200 {
 		return WebResult{Reason: "Claude session expired or blocked (HTTP " +
 			strconv.Itoa(status) + apiErrorSuffix(body) + ")"}
@@ -207,9 +194,58 @@ func CheckWeb(jar map[string]string) WebResult {
 			res.Reason = "Claude shared conversations read failed (HTTP " + strconv.Itoa(status) + ")"
 			continue
 		}
-		res.SharedConversations = append(res.SharedConversations, parseShares(body)...)
+		res.SharedConversations = append(res.SharedConversations, parseShares(body, org)...)
 	}
 	return res
+}
+
+// UnshareWith removes the supplied public snapshots using the same browser
+// session that discovered them.
+func UnshareWith(jar map[string]string, conversations []SharedConversation) UnshareResult {
+	cookie := cookieHeader(jar)
+	client, agent, status, _ := findWebSession(cookie)
+	if status != 200 {
+		return UnshareResult{Failed: conversations}
+	}
+	var result UnshareResult
+	for _, conversation := range conversations {
+		if conversation.OrganizationUUID == "" || conversation.SnapshotUUID == "" {
+			result.Failed = append(result.Failed, conversation)
+			continue
+		}
+		path := "/api/organizations/" + conversation.OrganizationUUID +
+			"/share/" + conversation.SnapshotUUID
+		status, _ := webDelete(client, path, cookie, agent)
+		if status >= 200 && status < 300 {
+			result.Removed = append(result.Removed, conversation)
+		} else {
+			result.Failed = append(result.Failed, conversation)
+		}
+	}
+	return result
+}
+
+func findWebSession(cookie string) (tls_client.HttpClient, string, int, []byte) {
+	var lastStatus int
+	var lastBody []byte
+	for _, candidate := range webProfiles {
+		profile, ok := profiles.MappedTLSClients[candidate.Profile]
+		if !ok {
+			continue
+		}
+		client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(),
+			tls_client.WithTimeoutSeconds(25), tls_client.WithClientProfile(profile))
+		if err != nil {
+			continue
+		}
+		status, body := webGet(client, "/api/account?statsig_hashing_algorithm=djb2",
+			cookie, candidate.Agent)
+		if status == 200 {
+			return client, candidate.Agent, status, body
+		}
+		lastStatus, lastBody = status, body
+	}
+	return nil, "", lastStatus, lastBody
 }
 
 func oauthToken() (string, error) {
@@ -254,6 +290,27 @@ func webGet(client tls_client.HttpClient, path, cookie, agent string) (int, []by
 	return resp.StatusCode, body
 }
 
+func webDelete(client tls_client.HttpClient, path, cookie, agent string) (int, []byte) {
+	req, err := http.NewRequest(http.MethodDelete, webBase+path, nil)
+	if err != nil {
+		return 0, nil
+	}
+	req.Header = http.Header{
+		"accept":            {"application/json"},
+		"referer":           {webBase + "/chats"},
+		"user-agent":        {agent},
+		"cookie":            {cookie},
+		http.HeaderOrderKey: {"accept", "referer", "user-agent", "cookie"},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, body
+}
+
 func cookieHeader(jar map[string]string) string {
 	parts := make([]string, 0, len(jar))
 	for k, v := range jar {
@@ -262,7 +319,7 @@ func cookieHeader(jar map[string]string) string {
 	return strings.Join(parts, "; ")
 }
 
-func parseShares(body []byte) []SharedConversation {
+func parseShares(body []byte, organizationUUID string) []SharedConversation {
 	var rows []map[string]any
 	if json.Unmarshal(body, &rows) != nil {
 		var wrapped struct {
@@ -277,12 +334,18 @@ func parseShares(body []byte) []SharedConversation {
 	for _, row := range rows {
 		name := firstString(row, "name", "title", "conversation_name")
 		url := firstString(row, "url", "share_url")
+		snapshotUUID := firstString(row, "snapshot_uuid", "share_uuid", "uuid", "id")
 		if url == "" {
-			if uuid := firstString(row, "snapshot_uuid", "share_uuid", "uuid", "id"); uuid != "" {
-				url = webBase + "/share/" + uuid
+			if snapshotUUID != "" {
+				url = webBase + "/share/" + snapshotUUID
 			}
 		}
-		out = append(out, SharedConversation{Name: name, URL: url})
+		out = append(out, SharedConversation{
+			Name:             name,
+			URL:              url,
+			OrganizationUUID: organizationUUID,
+			SnapshotUUID:     snapshotUUID,
+		})
 	}
 	return out
 }

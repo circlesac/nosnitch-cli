@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/circlesac/nosnitch-cli/internal/account"
 	"github.com/circlesac/nosnitch-cli/internal/chatgpt"
+	"github.com/circlesac/nosnitch-cli/internal/claude"
 	"github.com/circlesac/nosnitch-cli/internal/cookies"
 )
 
@@ -31,6 +33,8 @@ func main() {
 		os.Exit(runStatus(hasFlag("--json")))
 	case "off":
 		os.Exit(runOff())
+	case "claude":
+		os.Exit(runClaudeCommand())
 	case "version", "-v", "--version":
 		fmt.Println("nosnitch", version)
 	case "help", "-h", "--help":
@@ -60,11 +64,90 @@ func usage() {
 Usage:
   nosnitch            Show what's exposed to training or public sharing (status)
   nosnitch off        Opt out — turn OpenAI training/data-sharing OFF
+  nosnitch claude unshare    Remove public Claude chat links
+                              (--yes to skip confirmation)
   nosnitch status     Same as no args   (--json for machine output)
   nosnitch version
 
 Status exit code: 0 = clean, 1 = training/sharing exposure found, 2 = indeterminate
 `)
+}
+
+func runClaudeCommand() int {
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "missing Claude command\n\nUsage: nosnitch claude unshare [--yes]")
+		return 2
+	}
+	switch os.Args[2] {
+	case "unshare":
+		return runUnshare(hasFlag("--yes"))
+	default:
+		fmt.Fprintf(os.Stderr, "unknown Claude command: %s\n\nUsage: nosnitch claude unshare [--yes]\n", os.Args[2])
+		return 2
+	}
+}
+
+func runUnshare(yes bool) int {
+	type session struct {
+		email  string
+		source string
+		jar    map[string]string
+		shares []claude.SharedConversation
+	}
+	var sessions []session
+	seenAccounts := map[string]bool{}
+	for _, browser := range cookies.Installed() {
+		jar, err := browser.Claude()
+		if err != nil || jar == nil {
+			continue
+		}
+		result := claude.CheckWeb(jar)
+		if !result.OK || seenAccounts[result.Email] {
+			continue
+		}
+		seenAccounts[result.Email] = true
+		if len(result.SharedConversations) > 0 {
+			sessions = append(sessions, session{
+				email: result.Email, source: browser.Name, jar: jar,
+				shares: result.SharedConversations,
+			})
+		}
+	}
+	if len(sessions) == 0 {
+		fmt.Println(c("  ✓ no shared Claude chats found", grn))
+		return 0
+	}
+
+	total := 0
+	for _, current := range sessions {
+		fmt.Printf("  %s  %s\n", c(current.email, bold), c("via "+current.source, dim))
+		for _, shared := range current.shares {
+			total++
+			fmt.Println("    " + shared.URL)
+		}
+	}
+	if !yes {
+		fmt.Printf("\nRemove %d public Claude share link(s)? [y/N] ", total)
+		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Println("Cancelled.")
+			return 0
+		}
+	}
+
+	removed, failed := 0, 0
+	for _, current := range sessions {
+		result := claude.UnshareWith(current.jar, current.shares)
+		removed += len(result.Removed)
+		failed += len(result.Failed)
+	}
+	fmt.Printf("  %s\n", c(fmt.Sprintf("✓ removed %d public Claude share link(s)", removed), grn))
+	if failed > 0 {
+		fmt.Printf("  %s\n", c(fmt.Sprintf("✗ failed to remove %d link(s)", failed), red))
+		return 1
+	}
+	return 0
 }
 
 func runStatus(asJSON bool) int {
