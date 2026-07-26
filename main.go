@@ -1,8 +1,9 @@
 // nosnitch checks and clears AI account training and public-sharing exposure.
 //
-//	nosnitch                  show account privacy status
-//	nosnitch off              clear all detected exposure
-//	nosnitch claude unshare   remove only public Claude links
+//	nosnitch                         show account privacy status
+//	nosnitch off                     clear all detected exposure
+//	nosnitch <provider> training     turn off one provider's training
+//	nosnitch claude unshare          remove only public Claude links
 package main
 
 import (
@@ -33,8 +34,10 @@ func main() {
 		os.Exit(runStatus(hasFlag("--json")))
 	case "off":
 		os.Exit(runOff(hasFlag("--yes")))
+	case "openai":
+		os.Exit(runProviderCommand("openai"))
 	case "claude":
-		os.Exit(runClaudeCommand())
+		os.Exit(runProviderCommand("anthropic"))
 	case "version", "-v", "--version":
 		fmt.Println("nosnitch", version)
 	case "help", "-h", "--help":
@@ -69,6 +72,12 @@ Usage:
       Turn off supported training settings and remove public Claude links.
       Confirms before removing links unless --yes is supplied.
 
+  nosnitch openai training
+      Turn off OpenAI Account training settings.
+
+  nosnitch claude training
+      Turn off Claude Account model improvement.
+
   nosnitch claude unshare [--yes]
       Remove public Claude links without changing training settings.
 
@@ -81,18 +90,31 @@ Check exit codes:
 `)
 }
 
-func runClaudeCommand() int {
+func runProviderCommand(provider string) int {
+	label := "OpenAI"
+	usageLine := "nosnitch openai training"
+	flagHint := ""
+	if provider == "anthropic" {
+		label = "Claude"
+		usageLine = "nosnitch claude <training|unshare>"
+		flagHint = " [--yes]"
+	}
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "missing Claude command\n\nUsage: nosnitch claude unshare [--yes]")
+		fmt.Fprintf(os.Stderr, "missing %s command\n\nUsage: %s%s\n", label, usageLine, flagHint)
 		return 2
 	}
-	switch os.Args[2] {
-	case "unshare":
+	if os.Args[2] == "training" {
+		if provider == "openai" {
+			return runOpenAIOff()
+		}
+		return runClaudeTrainingOff()
+	}
+	if os.Args[2] == "unshare" && provider == "anthropic" {
 		return runUnshare(hasFlag("--yes"))
-	default:
-		fmt.Fprintf(os.Stderr, "unknown Claude command: %s\n\nUsage: nosnitch claude unshare [--yes]\n", os.Args[2])
-		return 2
 	}
+	fmt.Fprintf(os.Stderr, "unknown %s command: %s\n\nUsage: %s%s\n",
+		label, os.Args[2], usageLine, flagHint)
+	return 2
 }
 
 type claudeSession struct {
@@ -188,7 +210,52 @@ func statusCode(rep account.Report) int {
 	return 0
 }
 
+type offOutcome struct {
+	acted         bool
+	failed        bool
+	indeterminate bool
+	cancelled     bool
+}
+
 func runOff(yes bool) int {
+	fmt.Println(c("nosnitch", bold), c("· turning off all account privacy exposure…", dim))
+	fmt.Println()
+	claudeOutcome := turnOffClaude(yes)
+	if claudeOutcome.cancelled {
+		return 0
+	}
+	openAIOutcome := turnOffOpenAI()
+	return finishOff(mergeOutcomes(claudeOutcome, openAIOutcome))
+}
+
+func runOpenAIOff() int {
+	fmt.Println(c("nosnitch", bold), c("· turning off OpenAI Account training…", dim))
+	fmt.Println()
+	return finishOff(turnOffOpenAI())
+}
+
+func runClaudeTrainingOff() int {
+	fmt.Println(c("nosnitch", bold), c("· turning off Claude Account training…", dim))
+	fmt.Println()
+	result := claude.OffCode()
+	if !result.OK {
+		if result.Email == "" {
+			fmt.Println(c("  no Claude Code account could be updated", yel))
+			return 2
+		}
+		fmt.Println(c("  ✗ Claude model improvement: "+result.Reason, red))
+		return 1
+	}
+	fmt.Println("  " + c("[Claude Account]", bold))
+	field("Account", result.Email, "", "")
+	field("Discovered via", "Claude Code", "", "")
+	field("Model improvement", "OFF", grn, "")
+	fmt.Println()
+	fmt.Println(c("  ✓ Claude Account training turned off", grn))
+	return 0
+}
+
+func turnOffClaude(yes bool) offOutcome {
 	claudeSessions := discoverClaudeSessions()
 	sharedCount := 0
 	for _, current := range claudeSessions {
@@ -206,14 +273,46 @@ func runOff(yes bool) int {
 		answer = strings.TrimSpace(strings.ToLower(answer))
 		if answer != "y" && answer != "yes" {
 			fmt.Println("Cancelled.")
-			return 0
+			return offOutcome{cancelled: true}
 		}
 	}
 
-	fmt.Println(c("nosnitch", bold), c("· turning off training and public sharing…", dim))
-	fmt.Println()
+	outcome := offOutcome{}
+	claudeOff := claude.OffCode()
+	if claudeOff.OK {
+		outcome.acted = true
+		fmt.Println("  " + c("[Claude Account]", bold))
+		field("Account", claudeOff.Email, "", "")
+		field("Discovered via", "Claude Code", "", "")
+		field("Model improvement", "OFF", grn, "")
+		fmt.Println()
+	} else if claudeOff.Email != "" {
+		outcome.failed = true
+		fmt.Println(c("  ! Claude model improvement: "+claudeOff.Reason, yel))
+	} else {
+		outcome.indeterminate = true
+	}
 
-	acted, failed, fdaBlocked := false, false, false
+	removed, unshareFailed := 0, 0
+	for _, current := range claudeSessions {
+		result := claude.UnshareWith(current.jar, current.shares)
+		removed += len(result.Removed)
+		unshareFailed += len(result.Failed)
+	}
+	if removed > 0 {
+		outcome.acted = true
+		fmt.Println(c(fmt.Sprintf("  ✓ removed %d public Claude share link(s)", removed), grn))
+	}
+	if unshareFailed > 0 {
+		outcome.failed = true
+		fmt.Println(c(fmt.Sprintf("  ✗ failed to remove %d Claude share link(s)", unshareFailed), red))
+	}
+	return outcome
+}
+
+func turnOffOpenAI() offOutcome {
+	outcome := offOutcome{}
+	fdaBlocked := false
 	for _, b := range cookies.Installed() {
 		jar, err := b.ChatGPT()
 		if err == cookies.ErrNeedFullDiskAccess {
@@ -227,7 +326,7 @@ func runOff(yes bool) int {
 		if !r.OK {
 			continue
 		}
-		acted = true
+		outcome.acted = true
 		fmt.Println("  " + c("[OpenAI Account]", bold))
 		field("Account", r.Email, "", "")
 		field("Discovered via", b.Name, "", "")
@@ -242,47 +341,39 @@ func runOff(yes bool) int {
 		fmt.Println()
 	}
 
-	claudeOff := claude.OffCode()
-	if claudeOff.OK {
-		acted = true
-		fmt.Println("  " + c("[Claude Account]", bold))
-		field("Account", claudeOff.Email, "", "")
-		field("Discovered via", "Claude Code", "", "")
-		field("Model improvement", "OFF", grn, "")
-		fmt.Println()
-	} else if claudeOff.Email != "" {
-		failed = true
-		fmt.Println(c("  ! Claude model improvement: "+claudeOff.Reason, yel))
-	}
-
-	removed, unshareFailed := 0, 0
-	for _, current := range claudeSessions {
-		result := claude.UnshareWith(current.jar, current.shares)
-		removed += len(result.Removed)
-		unshareFailed += len(result.Failed)
-	}
-	if removed > 0 {
-		acted = true
-		fmt.Println(c(fmt.Sprintf("  ✓ removed %d public Claude share link(s)", removed), grn))
-	}
-	if unshareFailed > 0 {
-		failed = true
-		fmt.Println(c(fmt.Sprintf("  ✗ failed to remove %d Claude share link(s)", unshareFailed), red))
-	}
-
 	if fdaBlocked {
 		fmt.Println(c("  ! Safari session found but couldn't be read — needs Full Disk Access.", yel))
 		fmt.Println(c("    Opening the setting; add your terminal, then re-run `nosnitch off`.", dim))
 		exec.Command("open", fdaSettingsURL).Run()
+		outcome.indeterminate = true
 	}
+	return outcome
+}
 
-	if failed {
+func mergeOutcomes(values ...offOutcome) offOutcome {
+	var merged offOutcome
+	for _, value := range values {
+		merged.acted = merged.acted || value.acted
+		merged.failed = merged.failed || value.failed
+		merged.indeterminate = merged.indeterminate || value.indeterminate
+		merged.cancelled = merged.cancelled || value.cancelled
+	}
+	return merged
+}
+
+func finishOff(outcome offOutcome) int {
+	if outcome.failed {
 		return 1
 	}
-	if !acted {
-		if fdaBlocked {
-			return 2
+	if outcome.indeterminate {
+		if outcome.acted {
+			fmt.Println(c("  ! some account settings could not be verified", yel))
+		} else {
+			fmt.Println(c("  no supported account could be updated", yel))
 		}
+		return 2
+	}
+	if !outcome.acted {
 		fmt.Println(c("  no supported account could be updated", yel))
 		return 2
 	}
