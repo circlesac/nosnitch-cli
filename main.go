@@ -94,7 +94,7 @@ Usage:
 Check exit codes:
   0  clean
   1  training or public-sharing exposure found
-  2  indeterminate
+  2  incomplete — one or more account checks could not be completed
 `)
 }
 
@@ -545,7 +545,7 @@ func printStatus(rep account.Report) {
 	case rep.Risk():
 		fmt.Println(c("  ✗ privacy exposure found", red), c("— review the account settings above", dim))
 	case rep.Indeterminate():
-		fmt.Println(c("  ? indeterminate", yel), c("— one or more account checks could not be completed", dim))
+		fmt.Println(c("  ? incomplete", yel), c("— one or more account checks could not be completed", dim))
 	default:
 		fmt.Println(c("  ✓ no training or public-sharing exposure found", grn))
 	}

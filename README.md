@@ -29,7 +29,8 @@ nosnitch · AI account privacy check
 ```
 
 Exit code: `0` clean · `1` training or public-sharing exposure found ·
-`2` indeterminate. This makes the command suitable for CI and local checks.
+`2` incomplete (one or more account checks could not be completed). This makes
+the command suitable for CI and local checks.
 
 ## What it checks
 
