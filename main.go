@@ -20,8 +20,6 @@ import (
 	"github.com/circlesac/nosnitch-cli/internal/cookies"
 )
 
-var version = "0.0.0-dev"
-
 const fdaSettingsURL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
 
 func main() {
@@ -47,7 +45,7 @@ func main() {
 	case "claude":
 		os.Exit(runProviderCommand("anthropic"))
 	case "version", "-v", "--version":
-		fmt.Println("nosnitch", version)
+		fmt.Println("nosnitch", Version)
 	case "help", "-h", "--help":
 		usage()
 	default:
