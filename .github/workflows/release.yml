@@ -17,7 +17,7 @@ jobs:
       - name: Calculate version
         id: bump
         run: |
-          VERSION=$(npx --yes @circlesac/oneup version --target version.json | tail -1)
+          VERSION=$(npx --yes @circlesac/oneup version --source git --target version.json | tail -1)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
