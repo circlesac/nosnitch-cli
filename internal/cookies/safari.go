@@ -7,10 +7,10 @@ import (
 	"strings"
 )
 
-// safariChatGPT parses Safari's Cookies.binarycookies and returns chatgpt.com
+// safariCookies parses Safari's Cookies.binarycookies and returns matching
 // cookies. Values are plaintext (no Keychain), but the file is TCC-protected —
 // a blocked read surfaces as ErrNeedFullDiskAccess.
-func safariChatGPT(path string) (map[string]string, error) {
+func safariCookies(path, hostLike string) (map[string]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) ||
@@ -21,7 +21,7 @@ func safariChatGPT(path string) (map[string]string, error) {
 	}
 	jar := map[string]string{}
 	for _, ck := range parseBinaryCookies(data) {
-		if strings.Contains(ck.domain, "chatgpt.com") {
+		if strings.Contains(ck.domain, hostLike) {
 			jar[ck.name] = ck.value
 		}
 	}

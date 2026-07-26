@@ -55,15 +55,15 @@ func hasFlag(name string) bool {
 }
 
 func usage() {
-	fmt.Print(`nosnitch — stop your coding agent from snitching your code to model training.
+	fmt.Print(`nosnitch — check AI account training and public sharing settings.
 
 Usage:
-  nosnitch            Show what's exposed to training (status)
-  nosnitch off        Opt out — turn training/data-sharing OFF
+  nosnitch            Show what's exposed to training or public sharing (status)
+  nosnitch off        Opt out — turn OpenAI training/data-sharing OFF
   nosnitch status     Same as no args   (--json for machine output)
   nosnitch version
 
-Status exit code: 0 = clean, 1 = a training-share setting is ON, 2 = indeterminate
+Status exit code: 0 = clean, 1 = training/sharing exposure found, 2 = indeterminate
 `)
 }
 
@@ -82,7 +82,7 @@ func statusCode(rep account.Report) int {
 	if rep.Risk() {
 		return 1
 	}
-	if len(rep.Accounts) == 0 {
+	if rep.Indeterminate() {
 		return 2
 	}
 	return 0
@@ -195,18 +195,52 @@ func flagRow(label string, v *bool, onNote string) {
 }
 
 func printStatus(rep account.Report) {
-	fmt.Println(c("nosnitch", bold), c("· is OpenAI training on your code?", dim))
+	fmt.Println(c("nosnitch", bold), c("· AI account privacy check", dim))
 	fmt.Println()
 
 	for _, a := range rep.Accounts {
-		fmt.Println("  " + c(a.Email, bold))
-		if a.Plan != "" {
-			field("Plan", "ChatGPT "+capitalize(a.Plan), "", "")
+		label := "OpenAI Account"
+		if a.Provider == "anthropic" {
+			label = "Claude Account"
 		}
-		field("Signed in", strings.Join(a.Sources, ", "), "", "")
-		flagRow("API data sharing", a.APIDataSharing, "API traffic used for training")
-		for _, f := range chatgpt.TrainingFeatures {
-			flagRow(f.Label, a.Training[f.Key], f.OnNote)
+		fmt.Println("  " + c("["+label+"]", bold))
+		field("Account", a.Email, "", "")
+		if a.Plan != "" {
+			plan := capitalize(a.Plan)
+			if a.Provider == "openai" {
+				plan = "ChatGPT " + plan
+			}
+			field("Plan", plan, "", "")
+		}
+		field("Discovered via", strings.Join(a.Sources, ", "), "", "")
+		if a.Provider == "openai" {
+			flagRow("API data sharing", a.APIDataSharing, "API traffic used for training")
+			for _, f := range chatgpt.TrainingFeatures {
+				flagRow(f.Label, a.Training[f.Key], f.OnNote)
+			}
+		} else {
+			if a.ModelImprovement == nil {
+				field("Model improvement", "UNKNOWN", yel, "account setting could not be read")
+			} else {
+				flagRow("Model improvement", a.ModelImprovement, "chats and coding sessions used for training")
+			}
+			if !a.SharedChatsChecked {
+				field("Shared chats", "UNKNOWN", yel, "no readable Claude browser session")
+			} else {
+				count := len(a.SharedConversations)
+				color := grn
+				if count > 0 {
+					color = red
+				}
+				field("Shared chats", fmt.Sprintf("%d", count), color, sharedNote(count))
+			}
+			for _, shared := range a.SharedConversations {
+				name := shared.Name
+				if name == "" {
+					name = "(untitled)"
+				}
+				fmt.Printf("      %s  %s\n", c(name, yel), c(shared.URL, dim))
+			}
 		}
 		fmt.Println()
 	}
@@ -219,10 +253,17 @@ func printStatus(rep account.Report) {
 
 	switch {
 	case rep.Risk():
-		fmt.Println(c("  ✗ training-share is ON", red), c("— run `nosnitch off` to opt out", dim))
-	case len(rep.Accounts) == 0:
-		fmt.Println(c("  ? indeterminate", yel), c("— no ChatGPT session found", dim))
+		fmt.Println(c("  ✗ privacy exposure found", red), c("— review the account settings above", dim))
+	case rep.Indeterminate():
+		fmt.Println(c("  ? indeterminate", yel), c("— one or more account checks could not be completed", dim))
 	default:
-		fmt.Println(c("  ✓ nothing is exposed to training", grn))
+		fmt.Println(c("  ✓ no training or public-sharing exposure found", grn))
 	}
+}
+
+func sharedNote(count int) string {
+	if count > 0 {
+		return "publicly accessible links found"
+	}
+	return ""
 }

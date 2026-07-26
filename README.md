@@ -1,48 +1,63 @@
 # nosnitch
 
-**Is your coding agent snitching your code to model training?**
+**Are your AI accounts training on or publicly sharing your work?**
 
-`nosnitch` verifies — from your own machine — whether the AI coding tools you use
-are configured to send your prompts/code into model training. It doesn't just
-*tell you how to opt out*; it reads the **actual current state** of your accounts
-and reports ON/OFF.
+`nosnitch` verifies the current privacy state of the AI accounts available on
+your machine. It groups CLI and browser sessions by account instead of treating
+each product surface as a separate identity.
 
-```
+```text
 $ nosnitch check
-nosnitch — coding-agent training-share check
+nosnitch · AI account privacy check
 
-[codex-cli] ~/.codex/auth.json
-  account            : you@example.com  (ChatGPT pro)
-  API data-sharing   : ON  (incentives program = API-key traffic collected for training)
-     → turn off: platform.openai.com/settings/organization/data-controls/sharing
+  [Claude Account]
+    Account           you@company.com
+    Plan              Max
+    Discovered via    Claude Code, Chrome
+    Model improvement OFF
+    Shared chats      0
 
-[chatgpt-web] Chrome session
-  account                  : you@company.com
-  Improve the model (all)  : ON
-  Codex content training   : OFF
+  [OpenAI Account]
+    Account           you@company.com
+    Plan              ChatGPT Pro
+    Discovered via    Codex CLI, Chrome
+    API data sharing  OFF
+    Model training    OFF
+    Codex training    OFF
 
-verdict: ⚠️  a training-share setting is ON — review above
+  ✓ no training or public-sharing exposure found
 ```
 
-Exit code: `0` clean · `1` a training-share setting is ON · `2` indeterminate —
-so it drops into CI or a pre-commit hook.
+Exit code: `0` clean · `1` training or public-sharing exposure found ·
+`2` indeterminate. This makes the command suitable for CI and local checks.
 
 ## What it checks
 
-| Source | Reads | Reports |
-|--------|-------|---------|
-| **codex-cli** | `~/.codex/auth.json` (local JWT, no network) | account, plan, and whether the org is opted into OpenAI's **API data-sharing incentives program** |
-| **chatgpt-web** | your browser's logged-in ChatGPT session | `training_allowed` ("Improve the model for everyone") and `codex_training_allowed` for that account |
+| Account | Source | Reports |
+|---|---|---|
+| **OpenAI Account** | Codex CLI | Account, plan, and API data-sharing incentives enrollment |
+| **OpenAI Account** | ChatGPT browser session | ChatGPT and Codex model-training settings |
+| **Claude Account** | Claude Code | Account, plan, and the account-wide “Help improve Claude” setting |
+| **Claude Account** | Claude browser session | Publicly shared Claude conversations |
+
+The Claude model-improvement preference applies to consumer Claude chats and
+Claude Code coding sessions. Commercial Claude plans and API usage follow their
+organization's commercial data policy.
 
 ## How it works
 
-- **codex-cli** decodes the id_token in `~/.codex/auth.json` locally — nothing leaves your machine.
-- **chatgpt-web** borrows the session you're already logged into:
-  1. decrypts Chrome's `chatgpt.com` cookies (macOS Keychain → AES-128-CBC),
-  2. impersonates a real browser's TLS fingerprint so Cloudflare lets the request through,
-  3. exchanges the session cookie for an `accessToken` and reads `/backend-api/settings/user`.
+- **Codex CLI**: decodes the ID token in `~/.codex/auth.json` locally.
+- **ChatGPT**: borrows the logged-in browser session to read
+  `/backend-api/settings/user`.
+- **Claude Code**: reads account metadata from `~/.claude.json`, then uses the
+  OAuth token stored in macOS Keychain for a read-only request to
+  `/api/oauth/account/settings`.
+- **Claude**: borrows the logged-in browser session and reads the same
+  `/api/organizations/{id}/shares` endpoint used by claude.ai.
 
-Everything runs locally against **your own** accounts. No token or cookie ever leaves the machine.
+Browser cookies are decrypted locally using macOS Keychain. Tokens and cookies
+are sent only to the corresponding first-party service and are never printed or
+sent elsewhere.
 
 ## Install
 
@@ -56,17 +71,20 @@ curl -fsSL https://github.com/circlesac/nosnitch-cli/releases/latest/download/in
 
 ```bash
 nosnitch check          # human-readable report
-nosnitch check --json   # machine-readable
+nosnitch check --json   # machine-readable report
+nosnitch off            # turn supported OpenAI training settings off
 ```
 
-## Status / roadmap
+`nosnitch off` currently changes OpenAI settings only. Claude checks are
+read-only.
 
-v1 targets **macOS + Chrome**. Planned: Edge/Brave/Arc and Linux/Windows cookie
-stores; more agents (Claude Code, opencode, Cursor); optionally *changing* a
-setting, not just reading it.
+## Platform support
+
+The current release targets macOS. Chromium browser support includes Chrome,
+Edge, and Brave default profiles; Safari requires Full Disk Access. Planned:
+additional browser profiles, Arc, and Linux/Windows cookie stores.
 
 ## Security note
 
-`nosnitch` reads sensitive local credentials (Codex tokens, browser cookies) to
-inspect **your** settings. It performs read-only requests to your own accounts
-and never transmits secrets anywhere.
+`nosnitch` reads sensitive local credentials to inspect your settings. Requests
+are read-only except when you explicitly run `nosnitch off`.
