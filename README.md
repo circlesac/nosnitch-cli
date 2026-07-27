@@ -6,6 +6,18 @@
 your machine. It groups CLI and browser sessions by account instead of treating
 each product surface as a separate identity.
 
+## Why this exists
+
+Privacy guidance often stops at “change these settings,” which does not verify
+that every signed-in account is configured as intended. `nosnitch` reads the
+current settings across the CLI and browser sessions already on your machine so
+you can check the actual state in one place.
+
+The Claude public-sharing check was added after
+[a community report showed that publicly shared Claude conversations could appear in Google Search](https://www.reddit.com/r/ClaudeAI/comments/1v6fiyj/you_can_view_a_lot_of_shared_conversations_via/).
+`nosnitch` shows the title and URL of each public share it finds and can remove
+those links with `nosnitch claude unshare`.
+
 ```text
 $ nosnitch check
 nosnitch · AI account privacy check
