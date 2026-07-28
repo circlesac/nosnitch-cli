@@ -507,6 +507,10 @@ func printStatus(rep account.Report) {
 		if a.Provider == "openai" {
 			flagRow("API data sharing", a.APIDataSharing, "API traffic used for training")
 			for _, f := range chatgpt.TrainingFeatures {
+				if f.Key == chatgpt.CodexTrainingFeatureKey && a.CodexTrainingUnknown() {
+					field(f.Label, "UNKNOWN", yel, "ChatGPT account setting could not be read")
+					continue
+				}
 				flagRow(f.Label, a.Training[f.Key], f.OnNote)
 			}
 		} else {

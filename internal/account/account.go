@@ -36,6 +36,14 @@ func (a *Account) Risk() bool {
 	return truthy(a.ModelImprovement) || len(a.SharedConversations) > 0
 }
 
+// CodexTrainingUnknown reports whether a Codex CLI account was found without
+// successfully reading its ChatGPT account-level Codex training setting.
+func (a *Account) CodexTrainingUnknown() bool {
+	return a.Provider == "openai" &&
+		contains(a.Sources, "Codex CLI") &&
+		a.Training[chatgpt.CodexTrainingFeatureKey] == nil
+}
+
 // Blocked is a source we found but couldn't read (e.g. Safari without FDA).
 type Blocked struct {
 	Source string `json:"source"`
@@ -62,6 +70,9 @@ func (r Report) Indeterminate() bool {
 		return true
 	}
 	for _, a := range r.Accounts {
+		if a.CodexTrainingUnknown() {
+			return true
+		}
 		if a.Provider == "anthropic" &&
 			(a.ModelImprovement == nil || !a.SharedChatsChecked) {
 			return true
@@ -161,11 +172,18 @@ func Gather() Report {
 
 func truthy(b *bool) bool { return b != nil && *b }
 
-func appendUnique(values []string, value string) []string {
+func contains(values []string, value string) bool {
 	for _, existing := range values {
 		if existing == value {
-			return values
+			return true
 		}
+	}
+	return false
+}
+
+func appendUnique(values []string, value string) []string {
+	if contains(values, value) {
+		return values
 	}
 	return append(values, value)
 }

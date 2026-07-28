@@ -36,11 +36,13 @@ type Feature struct {
 	OnNote string // shown when it's ON
 }
 
+const CodexTrainingFeatureKey = "codex_training_allowed_v2"
+
 var TrainingFeatures = []Feature{
 	{"training_allowed", "Model training", "chats used for training"},
 	{"voice_training_allowed", "Voice training", "voice used for training"},
 	{"video_training_allowed", "Video training", "video used for training"},
-	{"codex_training_allowed_v2", "Codex training", "Codex content used for training"},
+	{CodexTrainingFeatureKey, "Codex training", "Codex content used for training"},
 }
 
 type Result struct {
@@ -101,8 +103,10 @@ func findSession(cookieHeader string) (client tls_client.HttpClient, access, ema
 			continue
 		}
 		var sess struct {
-			User        struct{ Email string `json:"email"` } `json:"user"`
-			AccessToken string                                `json:"accessToken"`
+			User struct {
+				Email string `json:"email"`
+			} `json:"user"`
+			AccessToken string `json:"accessToken"`
 		}
 		if json.Unmarshal([]byte(body), &sess) != nil || sess.AccessToken == "" {
 			continue
