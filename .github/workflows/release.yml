@@ -29,14 +29,26 @@ jobs:
 
   build:
     needs: version
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
         include:
-          - goarch: arm64
+          - runner: macos-latest
+            goos: darwin
+            goarch: arm64
             name: nosnitch-darwin-arm64
-          - goarch: amd64
+          - runner: macos-latest
+            goos: darwin
+            goarch: amd64
             name: nosnitch-darwin-amd64
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            name: nosnitch-linux-arm64
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            name: nosnitch-linux-amd64
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +62,7 @@ jobs:
 
       - name: Build
         env:
-          GOOS: darwin
+          GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
@@ -97,6 +109,8 @@ jobs:
           VERSION=${{ needs.version.outputs.version }}
           SHA_DARWIN_ARM64=$(shasum -a 256 artifacts/nosnitch-darwin-arm64/*.tar.gz | cut -d' ' -f1)
           SHA_DARWIN_AMD64=$(shasum -a 256 artifacts/nosnitch-darwin-amd64/*.tar.gz | cut -d' ' -f1)
+          SHA_LINUX_ARM64=$(shasum -a 256 artifacts/nosnitch-linux-arm64/*.tar.gz | cut -d' ' -f1)
+          SHA_LINUX_AMD64=$(shasum -a 256 artifacts/nosnitch-linux-amd64/*.tar.gz | cut -d' ' -f1)
 
           git clone https://x-access-token:${GH_TOKEN}@github.com/circlesac/homebrew-tap.git
           cd homebrew-tap
@@ -104,6 +118,8 @@ jobs:
           sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" Formula/nosnitch.rb
           sed -i "s/SHA_DARWIN_ARM64/${SHA_DARWIN_ARM64}/g" Formula/nosnitch.rb
           sed -i "s/SHA_DARWIN_AMD64/${SHA_DARWIN_AMD64}/g" Formula/nosnitch.rb
+          sed -i "s/SHA_LINUX_ARM64/${SHA_LINUX_ARM64}/g" Formula/nosnitch.rb
+          sed -i "s/SHA_LINUX_AMD64/${SHA_LINUX_AMD64}/g" Formula/nosnitch.rb
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

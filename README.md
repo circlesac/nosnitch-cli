@@ -63,14 +63,14 @@ organization's commercial data policy.
 - **ChatGPT**: borrows the logged-in browser session to read
   `/backend-api/settings/user`.
 - **Claude Code**: reads account metadata from `~/.claude.json`, then uses the
-  OAuth token stored in macOS Keychain for a read-only request to
-  `/api/oauth/account/settings`.
+  OAuth token stored in macOS Keychain or `~/.claude/.credentials.json` on
+  Linux for a read-only request to `/api/oauth/account/settings`.
 - **Claude**: borrows the logged-in Claude Desktop or browser session and reads the same
   `/api/organizations/{id}/shares` endpoint used by claude.ai.
 
-Browser cookies are decrypted locally using macOS Keychain. Tokens and cookies
-are sent only to the corresponding first-party service and are never printed or
-sent elsewhere.
+Browser cookies are decrypted locally using macOS Keychain or Linux Secret
+Service. Tokens and cookies are sent only to the corresponding first-party
+service and are never printed or sent elsewhere.
 
 ## Install
 
@@ -106,9 +106,12 @@ Claude's public links.
 
 ## Platform support
 
-The current release targets macOS. Chromium browser support includes Chrome,
-Edge, and Brave default profiles; Safari requires Full Disk Access. Planned:
-additional browser profiles, Arc, and Linux/Windows cookie stores.
+`nosnitch` supports macOS and Linux on amd64 and arm64. On macOS, browser
+support includes Chrome, Edge, Brave, Claude Desktop, and Safari; Safari
+requires Full Disk Access. On Linux, browser support includes Chrome, Chromium,
+Edge, and Brave default profiles. Linux `v11` Chromium cookies require an
+unlocked Secret Service keyring and `secret-tool` (`libsecret-tools` on
+Ubuntu); Homebrew installs this dependency automatically.
 
 ## Security note
 

@@ -1,24 +1,22 @@
 // Package cookies reads and decrypts a browser's cookies for a host.
-//
-//	Chromium (Chrome/Edge/Brave): SQLite Cookies DB, values AES-128-CBC (v10)
-//	    with a key from the macOS Keychain ("<Browser> Safe Storage").
-//	Safari: Cookies.binarycookies (Apple binary format, plaintext values),
-//	    but the file lives in a TCC-protected container → needs Full Disk Access.
+// Chromium cookies are read from their SQLite store and decrypted with the
+// platform's browser credential store. Safari is supported on macOS.
 package cookies
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/sha1"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strconv"
+	"unicode/utf8"
 
-	"golang.org/x/crypto/pbkdf2"
 	_ "modernc.org/sqlite"
 )
 
@@ -33,21 +31,26 @@ const (
 )
 
 type Browser struct {
-	Name        string
-	kind        kind
-	relPath     string // cookie store path relative to $HOME
-	keychainSvc string // chromium: "<Browser> Safe Storage"
+	Name           string
+	kind           kind
+	relPaths       []string // cookie store paths relative to $HOME, preferred first
+	secretServices []string // platform credential-store lookup names
 }
 
-var known = []Browser{
-	{"Chrome", chromium, "Library/Application Support/Google/Chrome/Default/Cookies", "Chrome Safe Storage"},
-	{"Edge", chromium, "Library/Application Support/Microsoft Edge/Default/Cookies", "Microsoft Edge Safe Storage"},
-	{"Brave", chromium, "Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies", "Brave Safe Storage"},
-	{"Claude Desktop", chromium, "Library/Application Support/Claude/Cookies", "Claude Safe Storage"},
-	{"Safari", safari, "Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies", ""},
-}
+var known = platformBrowsers()
 
-func (b Browser) path() string { return filepath.Join(os.Getenv("HOME"), b.relPath) }
+func (b Browser) path() string {
+	for _, relPath := range b.relPaths {
+		path := filepath.Join(os.Getenv("HOME"), filepath.FromSlash(relPath))
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	if len(b.relPaths) == 0 {
+		return ""
+	}
+	return filepath.Join(os.Getenv("HOME"), filepath.FromSlash(b.relPaths[0]))
+}
 
 // Installed returns known browsers whose cookie store exists on this machine.
 func Installed() []Browser {
@@ -81,51 +84,72 @@ func chromiumCookies(b Browser, hostLike string) (map[string]string, error) {
 	}
 	defer cleanup()
 
-	// cheap plaintext pre-check — avoid a Keychain prompt when there's no session
+	// Avoid a credential-store lookup when the browser has no matching session.
 	var n int
 	if err := db.QueryRow(
 		"SELECT COUNT(*) FROM cookies WHERE host_key LIKE ?", "%"+hostLike).Scan(&n); err != nil || n == 0 {
 		return nil, nil
 	}
 
-	key, err := safeStorageKey(b.keychainSvc)
-	if err != nil {
-		return nil, err
+	var cookieDBVersion int
+	var version string
+	if db.QueryRow("SELECT value FROM meta WHERE key = 'version'").Scan(&version) == nil {
+		cookieDBVersion, _ = strconv.Atoi(version)
 	}
 	rows, err := db.Query(
-		"SELECT name, encrypted_value FROM cookies WHERE host_key LIKE ?", "%"+hostLike)
+		"SELECT host_key, name, value, encrypted_value FROM cookies WHERE host_key LIKE ?", "%"+hostLike)
 	if err != nil {
 		return nil, fmt.Errorf("query cookies: %w", err)
 	}
 	defer rows.Close()
 
 	jar := map[string]string{}
+	keys := map[string][]byte{}
+	keyFailures := map[string]error{}
+	var keyFailure error
 	for rows.Next() {
-		var name string
+		var hostKey, name, value string
 		var enc []byte
-		if rows.Scan(&name, &enc) != nil {
+		if rows.Scan(&hostKey, &name, &value, &enc) != nil {
 			continue
 		}
-		if v, ok := decryptV10(enc, key); ok {
-			jar[name] = v
+		if value != "" {
+			jar[name] = value
+			continue
+		}
+		if len(enc) < 3 {
+			continue
+		}
+		scheme := string(enc[:3])
+		key, ok := keys[scheme]
+		if !ok {
+			if _, failed := keyFailures[scheme]; failed {
+				continue
+			}
+			key, err = chromiumKey(b, scheme)
+			if err != nil {
+				keyFailures[scheme] = err
+				if keyFailure == nil {
+					keyFailure = err
+				}
+				continue
+			}
+			keys[scheme] = key
+		}
+		if value, ok := decryptChromium(enc, key, hostKey, cookieDBVersion >= 24); ok {
+			jar[name] = value
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read cookies: %w", err)
+	}
 	if len(jar) == 0 {
+		if keyFailure != nil {
+			return nil, keyFailure
+		}
 		return nil, nil
 	}
 	return jar, nil
-}
-
-func safeStorageKey(service string) ([]byte, error) {
-	out, err := exec.Command("security", "find-generic-password", "-w", "-s", service).Output()
-	if err != nil {
-		return nil, fmt.Errorf("read %q from Keychain failed (approve the prompt): %w", service, err)
-	}
-	pw := out
-	if n := len(pw); n > 0 && pw[n-1] == '\n' {
-		pw = pw[:n-1]
-	}
-	return pbkdf2.Key(pw, []byte("saltysalt"), 1003, 16, sha1.New), nil
 }
 
 // openCopy copies the (locked) Cookies DB to a temp file and opens it read-only.
@@ -153,8 +177,8 @@ func openCopy(src string) (*sql.DB, func(), error) {
 	return db, func() { db.Close(); os.Remove(tmp.Name()) }, nil
 }
 
-func decryptV10(enc, key []byte) (string, bool) {
-	if len(enc) < 3+aes.BlockSize || string(enc[:3]) != "v10" {
+func decryptChromium(enc, key []byte, hostKey string, hasHostDigest bool) (string, bool) {
+	if len(enc) < 3+aes.BlockSize || (string(enc[:3]) != "v10" && string(enc[:3]) != "v11") {
 		return "", false
 	}
 	ct := enc[3:]
@@ -165,23 +189,25 @@ func decryptV10(enc, key []byte) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	iv := make([]byte, 16)
-	for i := range iv {
-		iv[i] = 0x20
-	}
+	iv := bytes.Repeat([]byte{0x20}, aes.BlockSize)
 	pt := make([]byte, len(ct))
 	cipher.NewCBCDecrypter(block, iv).CryptBlocks(pt, ct)
 
-	if n := int(pt[len(pt)-1]); n >= 1 && n <= aes.BlockSize && n <= len(pt) { // PKCS7 unpad
-		pt = pt[:len(pt)-n]
+	n := int(pt[len(pt)-1])
+	if n < 1 || n > aes.BlockSize || n > len(pt) ||
+		!bytes.Equal(pt[len(pt)-n:], bytes.Repeat([]byte{byte(n)}, n)) {
+		return "", false
 	}
-	if len(pt) >= 32 { // strip 32-byte SHA256(host_key) prefix (recent Chrome/macOS)
-		pt = pt[32:]
-	}
-	for _, b := range pt {
-		if b > 0x7f {
+	pt = pt[:len(pt)-n]
+	if hasHostDigest {
+		digest := sha256.Sum256([]byte(hostKey))
+		if len(pt) < len(digest) || !bytes.Equal(pt[:len(digest)], digest[:]) {
 			return "", false
 		}
+		pt = pt[len(digest):]
+	}
+	if !utf8.Valid(pt) {
+		return "", false
 	}
 	return string(pt), true
 }

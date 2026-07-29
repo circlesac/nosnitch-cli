@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,10 +17,9 @@ import (
 )
 
 const (
-	apiBase         = "https://api.anthropic.com"
-	webBase         = "https://claude.ai"
-	keychainService = "Claude Code-credentials"
-	userAgent       = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+	apiBase   = "https://api.anthropic.com"
+	webBase   = "https://claude.ai"
+	userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
 		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
@@ -305,17 +303,13 @@ func findWebSession(cookie string) (tls_client.HttpClient, string, int, []byte) 
 	return nil, "", lastStatus, lastBody
 }
 
-func oauthToken() (string, error) {
-	out, err := exec.Command("security", "find-generic-password", "-w", "-s", keychainService).Output()
-	if err != nil {
-		return "", fmt.Errorf("Claude Code credentials not found in Keychain")
-	}
+func parseOAuthToken(data []byte) (string, error) {
 	var creds struct {
 		ClaudeAIOAuth struct {
 			AccessToken string `json:"accessToken"`
 		} `json:"claudeAiOauth"`
 	}
-	if err := json.Unmarshal(out, &creds); err != nil || creds.ClaudeAIOAuth.AccessToken == "" {
+	if err := json.Unmarshal(data, &creds); err != nil || creds.ClaudeAIOAuth.AccessToken == "" {
 		return "", fmt.Errorf("Claude Code OAuth token could not be read")
 	}
 	return creds.ClaudeAIOAuth.AccessToken, nil
