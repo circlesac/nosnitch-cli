@@ -11,6 +11,13 @@ func TestPlanName(t *testing.T) {
 	}
 }
 
+func TestParseOAuthToken(t *testing.T) {
+	got, err := parseOAuthToken([]byte(`{"claudeAiOauth":{"accessToken":"token-1"}}`))
+	if err != nil || got != "token-1" {
+		t.Fatalf("parseOAuthToken() = %q, %v", got, err)
+	}
+}
+
 func TestParseShares(t *testing.T) {
 	body := []byte(`[
 		{"conversation_uuid":"conversation-1","conversation_name":"Secrets","snapshot_uuid":"share-1"},

@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/circlesac/nosnitch-cli/internal/account"
@@ -19,8 +18,6 @@ import (
 	"github.com/circlesac/nosnitch-cli/internal/claude"
 	"github.com/circlesac/nosnitch-cli/internal/cookies"
 )
-
-const fdaSettingsURL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
 
 func main() {
 	cmd := "status"
@@ -390,7 +387,7 @@ func turnOffOpenAI(retryCommand string) offOutcome {
 	if fdaBlocked {
 		fmt.Println(c("  ! Safari session found but couldn't be read — needs Full Disk Access.", yel))
 		fmt.Println(c("    Opening the setting; add your terminal, then re-run `"+retryCommand+"`.", dim))
-		exec.Command("open", fdaSettingsURL).Run()
+		openFullDiskAccessSettings()
 		outcome.indeterminate = true
 	}
 	return outcome
@@ -539,7 +536,7 @@ func printStatus(rep account.Report) {
 
 	for _, b := range rep.Blocked {
 		fmt.Println(c("  ! "+b.Source+" — "+b.Reason+" to read its session.", yel))
-		fmt.Println(c(`    open "`+fdaSettingsURL+`"  (add your terminal, then re-run)`, dim))
+		fmt.Println(c(fullDiskAccessHint(), dim))
 		fmt.Println()
 	}
 
