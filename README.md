@@ -75,8 +75,19 @@ service and are never printed or sent elsewhere.
 ## Install
 
 ```bash
+# Debian and Ubuntu
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://circlesac.github.io/apt/circlesac-archive-keyring.asc \
+  | sudo tee /etc/apt/keyrings/circlesac-archive-keyring.asc >/dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/circlesac-archive-keyring.asc] https://circlesac.github.io/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/circlesac.list >/dev/null
+sudo apt-get update
+sudo apt-get install nosnitch
+
+# macOS or Linuxbrew
 brew install circlesac/tap/nosnitch
-# or
+
+# Standalone
 curl -fsSL https://github.com/circlesac/nosnitch-cli/releases/latest/download/install.sh | sh
 ```
 
