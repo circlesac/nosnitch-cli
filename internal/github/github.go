@@ -160,20 +160,29 @@ func offWith(client doer, base string, jar map[string]string) OffResult {
 		"authenticity_token": {features.AuthenticityToken},
 		"telemetry":          {"disabled"},
 	}
-	status, _, err = postForm(client, strings.TrimRight(base, "/")+features.FormAction, base+featuresPath, cookie, form)
+	updateStatus, _, err := postForm(client, strings.TrimRight(base, "/")+features.FormAction, base+featuresPath, cookie, form)
 	if err != nil {
 		return OffResult{Login: features.Login, Reason: "Copilot model-training update failed: " + err.Error()}
-	}
-	if status < 200 || status >= 400 {
-		return OffResult{Login: features.Login, Reason: "Copilot model-training update failed (HTTP " + strconv.Itoa(status) + ")"}
 	}
 
 	status, body, err = get(client, base+featuresPath, cookie)
 	if err != nil || status != http.StatusOK {
+		if updateStatus < 200 || updateStatus >= 400 {
+			return OffResult{Login: features.Login, Reason: "Copilot model-training update failed (HTTP " + strconv.Itoa(updateStatus) + "); verification failed"}
+		}
 		return OffResult{Login: features.Login, Reason: "Copilot model-training verification failed"}
 	}
 	verified, err := parseFeatures(body)
-	if err != nil || verified.ModelTraining == nil || *verified.ModelTraining {
+	if err != nil || verified.ModelTraining == nil {
+		if updateStatus < 200 || updateStatus >= 400 {
+			return OffResult{Login: features.Login, Reason: "Copilot model-training update failed (HTTP " + strconv.Itoa(updateStatus) + "); verification failed"}
+		}
+		return OffResult{Login: features.Login, Reason: "Copilot model-training verification failed"}
+	}
+	if *verified.ModelTraining {
+		if updateStatus < 200 || updateStatus >= 400 {
+			return OffResult{Login: features.Login, Reason: "Copilot model-training update failed (HTTP " + strconv.Itoa(updateStatus) + ")"}
+		}
 		return OffResult{Login: features.Login, Reason: "Copilot model-training preference is still enabled"}
 	}
 	return OffResult{OK: true, Login: features.Login, Changed: true}

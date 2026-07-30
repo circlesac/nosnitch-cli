@@ -113,6 +113,29 @@ func TestOffWithChangesOnlyTrainingAndVerifies(t *testing.T) {
 	}
 }
 
+func TestOffWithAcceptsVerifiedChangeAfterErrorStatus(t *testing.T) {
+	training := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			training = false
+			w.WriteHeader(http.StatusNotAcceptable)
+			return
+		}
+		value := "disabled"
+		if training {
+			value = "enabled"
+		}
+		fmt.Fprintf(w, `<meta name="user-login" content="octocat">
+<form action="/settings/copilot"><input name="authenticity_token" value="csrf-value"><input name="telemetry" value="%s"></form>`, value)
+	}))
+	defer server.Close()
+
+	result := offWith(server.Client(), server.URL, map[string]string{"session": "secret"})
+	if !result.OK || !result.Changed || result.Login != "octocat" {
+		t.Fatalf("offWith() = %#v", result)
+	}
+}
+
 func TestOffWithRejectsUnexpectedFormAction(t *testing.T) {
 	var posted bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
