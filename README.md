@@ -77,9 +77,15 @@ service and are never printed or sent elsewhere.
 ```bash
 # Debian and Ubuntu
 sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://circlesac.github.io/apt/circlesac-archive-keyring.asc \
-  | sudo tee /etc/apt/keyrings/circlesac-archive-keyring.asc >/dev/null
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/circlesac-archive-keyring.asc] https://circlesac.github.io/apt stable main" \
+tmp_key="$(mktemp)"
+curl -fsSL -o "$tmp_key" \
+  https://github.com/circlesac/homebrew-tap/releases/latest/download/circlesac-archive-keyring.asc
+fingerprint="$(gpg --batch --show-keys --with-colons "$tmp_key" 2>/dev/null \
+  | awk -F: '$1 == "fpr" {print $10; exit}')"
+test "$fingerprint" = "EDEB035445B676C3D9C4CFA2263CBDF3A243818E"
+sudo install -m 0644 "$tmp_key" /etc/apt/keyrings/circlesac-archive-keyring.asc
+rm -f "$tmp_key"
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/circlesac-archive-keyring.asc] https://github.com/circlesac/homebrew-tap/releases/latest/download ./" \
   | sudo tee /etc/apt/sources.list.d/circlesac.list >/dev/null
 sudo apt-get update
 sudo apt-get install nosnitch

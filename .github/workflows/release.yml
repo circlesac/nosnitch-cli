@@ -99,7 +99,7 @@ jobs:
             artifacts/**/*.deb
             bin/install.sh
 
-  publish-homebrew:
+  publish-package-indexes:
     needs: [version, release, build]
     runs-on: ubuntu-latest
     steps:
@@ -109,17 +109,17 @@ jobs:
         with:
           path: artifacts
 
-      - name: Update Homebrew formula
+      - name: Update Homebrew and APT indexes
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          VERSION=${{ needs.version.outputs.version }}
+          VERSION="${{ needs.version.outputs.version }}"
           SHA_DARWIN_ARM64=$(shasum -a 256 artifacts/nosnitch-darwin-arm64/*.tar.gz | cut -d' ' -f1)
           SHA_DARWIN_AMD64=$(shasum -a 256 artifacts/nosnitch-darwin-amd64/*.tar.gz | cut -d' ' -f1)
           SHA_LINUX_ARM64=$(shasum -a 256 artifacts/nosnitch-linux-arm64/*.tar.gz | cut -d' ' -f1)
           SHA_LINUX_AMD64=$(shasum -a 256 artifacts/nosnitch-linux-amd64/*.tar.gz | cut -d' ' -f1)
 
-          git clone https://x-access-token:${GH_TOKEN}@github.com/circlesac/homebrew-tap.git
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/circlesac/homebrew-tap.git"
           cd homebrew-tap
           cp ../homebrew/nosnitch.rb.template Formula/nosnitch.rb
           sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" Formula/nosnitch.rb
@@ -128,50 +128,22 @@ jobs:
           sed -i "s/SHA_LINUX_ARM64/${SHA_LINUX_ARM64}/g" Formula/nosnitch.rb
           sed -i "s/SHA_LINUX_AMD64/${SHA_LINUX_AMD64}/g" Formula/nosnitch.rb
 
+          mapfile -t packages < <(find ../artifacts/nosnitch-linux-* -type f -name '*.deb' | sort)
+          test "${#packages[@]}" -eq 2
+          for package in "${packages[@]}"; do
+            ./apt/scripts/add-package.sh "$package" circlesac/nosnitch-cli "v${VERSION}"
+          done
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/nosnitch.rb
-          git commit -m "Update nosnitch to ${VERSION}"
-          git push
-
-  publish-apt:
-    needs: [version, release, build]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Configure APT repository deploy key
-        env:
-          APT_REPO_DEPLOY_KEY: ${{ secrets.APT_REPO_DEPLOY_KEY }}
-        run: |
-          install -d -m 0700 ~/.ssh
-          printf '%s\n' "$APT_REPO_DEPLOY_KEY" > ~/.ssh/circlesac-apt
-          chmod 0600 ~/.ssh/circlesac-apt
-          curl -fsSL https://api.github.com/meta \
-            | jq -r '.ssh_keys[] | "github.com \(.)"' > ~/.ssh/known_hosts
-          printf '%s\n' \
-            'Host github.com' \
-            '  IdentityFile ~/.ssh/circlesac-apt' \
-            '  IdentitiesOnly yes' > ~/.ssh/config
-
-      - name: Publish Debian packages
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          git clone git@github.com:circlesac/apt.git
-          install -d -m 0755 apt/incoming/nosnitch
-          cp artifacts/nosnitch-linux-*/*.deb apt/incoming/nosnitch/
-          cd apt
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add incoming/nosnitch
+          git add Formula/nosnitch.rb "apt/manifests/nosnitch/${VERSION}"
+          git diff --cached --quiet && exit 0
           git commit -m "Update nosnitch to ${VERSION}"
           for attempt in 1 2 3; do
             git pull --rebase origin main
             if git push origin main; then
               exit 0
             fi
+            printf 'push attempt %s failed\n' "$attempt" >&2
           done
           exit 1
