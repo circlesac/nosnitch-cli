@@ -77,6 +77,8 @@ func (b Browser) ChatGPT() (map[string]string, error) { return b.Cookies("chatgp
 
 func (b Browser) Claude() (map[string]string, error) { return b.Cookies("claude.ai") }
 
+func (b Browser) GitHub() (map[string]string, error) { return b.Cookies("github.com") }
+
 func chromiumCookies(b Browser, hostLike string) (map[string]string, error) {
 	db, cleanup, err := openCopy(b.path())
 	if err != nil {

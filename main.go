@@ -9,14 +9,18 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/circlesac/nosnitch-cli/internal/account"
 	"github.com/circlesac/nosnitch-cli/internal/chatgpt"
 	"github.com/circlesac/nosnitch-cli/internal/claude"
 	"github.com/circlesac/nosnitch-cli/internal/cookies"
+	githubprivacy "github.com/circlesac/nosnitch-cli/internal/github"
 )
 
 func main() {
@@ -41,6 +45,8 @@ func main() {
 		os.Exit(runProviderCommand("openai"))
 	case "claude":
 		os.Exit(runProviderCommand("anthropic"))
+	case "github":
+		os.Exit(runProviderCommand("github"))
 	case "version", "-v", "--version":
 		fmt.Println("nosnitch", Version)
 	case "help", "-h", "--help":
@@ -84,6 +90,9 @@ Usage:
   nosnitch claude unshare [--yes]
       Remove public Claude links without changing training settings.
 
+  nosnitch github training [--yes]
+      Turn off GitHub Copilot model training.
+
   nosnitch version
 
 Check exit codes:
@@ -97,6 +106,8 @@ func runProviderCommand(provider string) int {
 	label := "OpenAI"
 	if provider == "anthropic" {
 		label = "Claude"
+	} else if provider == "github" {
+		label = "GitHub"
 	}
 	if len(os.Args) < 3 {
 		fmt.Fprintf(os.Stderr, "missing %s command\n\n", label)
@@ -111,6 +122,9 @@ func runProviderCommand(provider string) int {
 		if provider == "openai" {
 			return runOpenAIOff(hasFlag("--yes"))
 		}
+		if provider == "github" {
+			return runGitHubTrainingOff(hasFlag("--yes"))
+		}
 		return runClaudeTrainingOff(hasFlag("--yes"))
 	}
 	if os.Args[2] == "unshare" && provider == "anthropic" {
@@ -122,6 +136,13 @@ func runProviderCommand(provider string) int {
 }
 
 func providerUsage(provider string, out *os.File) {
+	if provider == "github" {
+		fmt.Fprint(out, `Usage:
+  nosnitch github training [--yes]
+      Turn off GitHub Copilot model training.
+`)
+		return
+	}
 	if provider == "anthropic" {
 		fmt.Fprint(out, `Usage:
   nosnitch claude training [--yes]
@@ -246,7 +267,8 @@ func runOff(yes bool) int {
 		return 0
 	}
 	openAIOutcome := turnOffOpenAI("nosnitch off")
-	return finishOff(mergeOutcomes(claudeOutcome, openAIOutcome),
+	githubOutcome := turnOffGitHub("nosnitch off")
+	return finishOff(mergeOutcomes(claudeOutcome, openAIOutcome, githubOutcome),
 		"training and public-sharing exposure turned off")
 }
 
@@ -282,6 +304,16 @@ func runClaudeTrainingOff(yes bool) int {
 	fmt.Println()
 	fmt.Println(c("  ✓ Claude Account training turned off", grn))
 	return 0
+}
+
+func runGitHubTrainingOff(yes bool) int {
+	if !yes && !confirm("Turn off GitHub Copilot model training?") {
+		return 0
+	}
+	fmt.Println(c("nosnitch", bold), c("· turning off GitHub Copilot model training…", dim))
+	fmt.Println()
+	return finishOff(turnOffGitHub("nosnitch github training"),
+		"GitHub Copilot model training turned off")
 }
 
 func turnOffClaude(yes bool) offOutcome {
@@ -343,13 +375,17 @@ func turnOffClaude(yes bool) offOutcome {
 }
 
 func confirm(prompt string) bool {
-	fmt.Printf("%s [y/N] ", prompt)
-	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	return confirmWith(prompt, os.Stdin, os.Stdout)
+}
+
+func confirmWith(prompt string, in io.Reader, out io.Writer) bool {
+	fmt.Fprintf(out, "%s [y/N] ", prompt)
+	answer, _ := bufio.NewReader(in).ReadString('\n')
 	answer = strings.TrimSpace(strings.ToLower(answer))
 	if answer == "y" || answer == "yes" {
 		return true
 	}
-	fmt.Println("Cancelled.")
+	fmt.Fprintln(out, "Cancelled.")
 	return false
 }
 
@@ -384,6 +420,51 @@ func turnOffOpenAI(retryCommand string) offOutcome {
 		fmt.Println()
 	}
 
+	if fdaBlocked {
+		fmt.Println(c("  ! Safari session found but couldn't be read — needs Full Disk Access.", yel))
+		fmt.Println(c("    Opening the setting; add your terminal, then re-run `"+retryCommand+"`.", dim))
+		openFullDiskAccessSettings()
+		outcome.indeterminate = true
+	}
+	return outcome
+}
+
+func turnOffGitHub(retryCommand string) offOutcome {
+	outcome := offOutcome{}
+	fdaBlocked := false
+	seen := map[string]bool{}
+	for _, browser := range cookies.Installed() {
+		jar, err := browser.GitHub()
+		if errors.Is(err, cookies.ErrNeedFullDiskAccess) {
+			fdaBlocked = true
+			continue
+		}
+		if err != nil || jar == nil {
+			continue
+		}
+		checked := githubprivacy.CheckWith(jar)
+		if !checked.OK {
+			outcome.indeterminate = true
+			fmt.Println(c("  ! "+browser.Name+" (GitHub): "+checked.Reason, yel))
+			continue
+		}
+		if seen[checked.Login] {
+			continue
+		}
+		seen[checked.Login] = true
+		result := githubprivacy.OffWith(jar)
+		if !result.OK {
+			outcome.failed = true
+			fmt.Println(c("  ✗ GitHub Copilot model training: "+result.Reason, red))
+			continue
+		}
+		outcome.acted = true
+		fmt.Println("  " + c("[GitHub Account]", bold))
+		field("Account", result.Login, "", "")
+		field("Discovered via", browser.Name, "", "")
+		field("Model training", "OFF", grn, "")
+		fmt.Println()
+	}
 	if fdaBlocked {
 		fmt.Println(c("  ! Safari session found but couldn't be read — needs Full Disk Access.", yel))
 		fmt.Println(c("    Opening the setting; add your terminal, then re-run `"+retryCommand+"`.", dim))
@@ -490,18 +571,29 @@ func printStatus(rep account.Report) {
 		label := "OpenAI Account"
 		if a.Provider == "anthropic" {
 			label = "Claude Account"
+		} else if a.Provider == "github" {
+			label = "GitHub Account"
 		}
 		fmt.Println("  " + c("["+label+"]", bold))
-		field("Account", a.Email, "", "")
+		identity := a.Email
+		if a.Provider == "github" {
+			identity = a.Login
+		}
+		field("Account", identity, "", "")
 		if a.Plan != "" {
 			plan := capitalize(a.Plan)
 			if a.Provider == "openai" {
 				plan = "ChatGPT " + plan
 			}
-			field("Plan", plan, "", "")
+			planLabel := "Plan"
+			if a.Provider == "github" {
+				planLabel = "Copilot license"
+			}
+			field(planLabel, plan, "", "")
 		}
 		field("Discovered via", strings.Join(a.Sources, ", "), "", "")
-		if a.Provider == "openai" {
+		switch a.Provider {
+		case "openai":
 			flagRow("API data sharing", a.APIDataSharing, "API traffic used for training")
 			for _, f := range chatgpt.TrainingFeatures {
 				if f.Key == chatgpt.CodexTrainingFeatureKey && a.CodexTrainingUnknown() {
@@ -510,7 +602,7 @@ func printStatus(rep account.Report) {
 				}
 				flagRow(f.Label, a.Training[f.Key], f.OnNote)
 			}
-		} else {
+		case "anthropic":
 			if a.ModelImprovement == nil {
 				field("Model improvement", "UNKNOWN", yel, "account setting could not be read")
 			} else {
@@ -530,6 +622,8 @@ func printStatus(rep account.Report) {
 				fmt.Print("  ")
 				printSharedChat(shared)
 			}
+		case "github":
+			printGitHubCopilot(a.GitHubCopilot)
 		}
 		fmt.Println()
 	}
@@ -537,6 +631,12 @@ func printStatus(rep account.Report) {
 	for _, b := range rep.Blocked {
 		fmt.Println(c("  ! "+b.Source+" — "+b.Reason+" to read its session.", yel))
 		fmt.Println(c(fullDiskAccessHint(), dim))
+		fmt.Println()
+	}
+	for _, skipped := range rep.Skipped {
+		fmt.Println(c("  ! "+skipped, yel))
+	}
+	if len(rep.Skipped) > 0 {
 		fmt.Println()
 	}
 
@@ -547,6 +647,44 @@ func printStatus(rep account.Report) {
 		fmt.Println(c("  ? incomplete", yel), c("— one or more account checks could not be completed", dim))
 	default:
 		fmt.Println(c("  ✓ no training or public-sharing exposure found", grn))
+	}
+}
+
+func printGitHubCopilot(settings *githubprivacy.Settings) {
+	if settings == nil {
+		field("Model training", "UNKNOWN", yel, "account setting could not be read")
+		field("Cloud agent repos", "UNKNOWN", yel, "repository scope could not be read")
+		field("Partner agents", "UNKNOWN", yel, "agent settings could not be read")
+		return
+	}
+	if settings.ModelTraining == nil {
+		field("Model training", "UNKNOWN", yel, "account setting could not be read")
+	} else {
+		flagRow("Model training", settings.ModelTraining, "inputs, outputs, and context used for training")
+	}
+	switch settings.CloudAgentRepositories {
+	case "none":
+		field("Cloud agent repos", "NONE", grn, "")
+	case "selected":
+		field("Cloud agent repos", fmt.Sprintf("SELECTED (%d)", settings.SelectedRepositories), yel,
+			"review repository selection")
+	case "all":
+		field("Cloud agent repos", "ALL REPOSITORIES", yel, "review account-wide access")
+	default:
+		field("Cloud agent repos", "UNKNOWN", yel, "repository scope could not be read")
+	}
+	if settings.PartnerAgents == nil {
+		field("Partner agents", "UNKNOWN", yel, "agent settings could not be read")
+		return
+	}
+	names := make([]string, 0, len(settings.PartnerAgents))
+	for name := range settings.PartnerAgents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		flagRow(capitalize(name)+" agent", settings.PartnerAgents[name],
+			"enabled wherever coding agents are allowed")
 	}
 }
 

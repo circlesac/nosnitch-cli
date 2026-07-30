@@ -1,10 +1,13 @@
 package account
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/circlesac/nosnitch-cli/internal/chatgpt"
 	"github.com/circlesac/nosnitch-cli/internal/claude"
+	githubprivacy "github.com/circlesac/nosnitch-cli/internal/github"
 )
 
 func TestClaudeAccountRisk(t *testing.T) {
@@ -27,6 +30,83 @@ func TestClaudeAccountRisk(t *testing.T) {
 				t.Fatalf("Risk() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGitHubAccountRiskAndIncomplete(t *testing.T) {
+	on, off := true, false
+	clean := &Account{
+		Provider: "github",
+		Login:    "octocat",
+		Plan:     "Copilot Pro",
+		GitHubCopilot: &githubprivacy.Settings{
+			ModelTraining:          &off,
+			CloudAgentRepositories: "all",
+			PartnerAgents:          map[string]*bool{"claude": &on, "codex": &off},
+		},
+	}
+	if clean.Risk() {
+		t.Fatal("broad repository or partner-agent access must not be classified as training exposure")
+	}
+	if clean.GitHubIncomplete() {
+		t.Fatal("complete GitHub result reported incomplete")
+	}
+	clean.GitHubCopilot.ModelTraining = &on
+	if !clean.Risk() {
+		t.Fatal("enabled GitHub model training was not classified as exposure")
+	}
+	clean.GitHubCopilot.ModelTraining = nil
+	if !clean.GitHubIncomplete() {
+		t.Fatal("missing GitHub model-training setting was not incomplete")
+	}
+}
+
+func TestGitHubBrowserSessionsMergeByLogin(t *testing.T) {
+	off := false
+	index := newAccountIndex()
+	result := githubprivacy.Result{
+		OK: true, Login: "octocat", License: "Copilot Pro",
+		Settings: githubprivacy.Settings{
+			ModelTraining:          &off,
+			CloudAgentRepositories: "selected",
+			SelectedRepositories:   2,
+			PartnerAgents:          map[string]*bool{"claude": &off, "codex": &off},
+		},
+	}
+	mergeGitHub(index.get("github", result.Login), result, "Chrome")
+	mergeGitHub(index.get("github", result.Login), result, "Safari")
+
+	accounts := index.accounts()
+	if len(accounts) != 1 {
+		t.Fatalf("merged account count = %d, want 1", len(accounts))
+	}
+	if strings.Join(accounts[0].Sources, ",") != "Chrome,Safari" {
+		t.Fatalf("merged sources = %#v", accounts[0].Sources)
+	}
+	encoded, _ := json.Marshal(Report{Accounts: accounts})
+	for _, field := range []string{`"provider":"github"`, `"login":"octocat"`,
+		`"model_training":false`, `"cloud_agent_repositories":"selected"`,
+		`"partner_agents"`} {
+		if !strings.Contains(string(encoded), field) {
+			t.Fatalf("GitHub JSON missing %s: %s", field, encoded)
+		}
+	}
+}
+
+func TestSkippedSessionMakesReportIndeterminate(t *testing.T) {
+	off := false
+	report := Report{
+		Accounts: []*Account{{
+			Provider: "github", Login: "octocat", Plan: "Copilot Pro",
+			GitHubCopilot: &githubprivacy.Settings{
+				ModelTraining: &off, CloudAgentRepositories: "none",
+				PartnerAgents: map[string]*bool{},
+			},
+		}},
+		Skipped: []string{"Chrome (GitHub): expired session"},
+	}
+	if !report.Indeterminate() {
+		t.Fatal("skipped GitHub session did not make report incomplete")
 	}
 }
 
