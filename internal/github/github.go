@@ -42,7 +42,7 @@ type Result struct {
 
 func (r Result) Complete() bool {
 	return r.OK && r.License != "" && r.Settings.ModelTraining != nil &&
-		r.Settings.CloudAgentRepositories != "" && r.Settings.PartnerAgents != nil
+		r.Settings.CloudAgentRepositories != "" && completePartnerAgents(r.Settings.PartnerAgents)
 }
 
 func (r Result) Risk() bool {
@@ -117,12 +117,14 @@ func checkWith(client doer, base string, jar map[string]string) Result {
 		reasons = append(reasons, "Copilot cloud-agent settings read failed: "+err.Error())
 	} else if status != http.StatusOK {
 		reasons = append(reasons, "Copilot cloud-agent settings read failed (HTTP "+strconv.Itoa(status)+")")
-	} else if coding, parseErr := parseCodingAgent(body); parseErr != nil {
-		reasons = append(reasons, parseErr.Error())
 	} else {
+		coding, parseErr := parseCodingAgent(body)
 		result.Settings.CloudAgentRepositories = coding.RepositoryScope
 		result.Settings.SelectedRepositories = coding.SelectedCount
 		result.Settings.PartnerAgents = coding.PartnerAgents
+		if parseErr != nil {
+			reasons = append(reasons, parseErr.Error())
+		}
 	}
 	result.Reason = strings.Join(reasons, "; ")
 	return result
@@ -206,12 +208,15 @@ func parseFeatures(body []byte) (featuresPage, error) {
 				page.License = "Copilot " + match[1]
 			}
 		}
-		if node.Type == html.ElementNode && node.Data == "form" {
+		if node.Type == html.ElementNode && node.Data == "form" &&
+			attr(node, "action") == "/settings/copilot" && page.AuthenticityToken == "" {
 			if telemetry := descendantInput(node, "telemetry"); telemetry != nil {
-				page.ModelTraining = settingBool(attr(telemetry, "value"))
-				page.FormAction = attr(node, "action")
-				if token := descendantInput(node, "authenticity_token"); token != nil {
-					page.AuthenticityToken = attr(token, "value")
+				if setting := settingBool(attr(telemetry, "value")); setting != nil {
+					page.ModelTraining = setting
+					page.FormAction = attr(node, "action")
+					if token := descendantInput(node, "authenticity_token"); token != nil {
+						page.AuthenticityToken = attr(token, "value")
+					}
 				}
 			}
 		}
@@ -233,7 +238,6 @@ func parseCodingAgent(body []byte) (codingAgentPage, error) {
 	}
 	var page codingAgentPage
 	foundScope := false
-	foundAgents := false
 	var walk func(*html.Node)
 	walk = func(node *html.Node) {
 		if node.Type == html.ElementNode && node.Data == "script" &&
@@ -243,12 +247,10 @@ func parseCodingAgent(body []byte) (codingAgentPage, error) {
 					Mode      string            `json:"mode"`
 					Selection []json.RawMessage `json:"selection"`
 					Agents    []struct {
-						Name        string `json:"name"`
-						DisplayName string `json:"displayName"`
-						Enabled     bool   `json:"enabled"`
+						Name    string `json:"name"`
+						Enabled bool   `json:"enabled"`
 					} `json:"agents"`
-					ModeChangedCallbackPath       string `json:"modeChangedCallbackPath"`
-					ThirdPartyAgentEnablementPath string `json:"third_party_agent_enablement_callback_path"`
+					ModeChangedCallbackPath string `json:"modeChangedCallbackPath"`
 				} `json:"props"`
 			}
 			if json.Unmarshal([]byte(node.FirstChild.Data), &payload) == nil {
@@ -257,14 +259,13 @@ func parseCodingAgent(body []byte) (codingAgentPage, error) {
 					page.SelectedCount = len(payload.Props.Selection)
 					foundScope = true
 				}
-				if payload.Props.Agents != nil || payload.Props.ThirdPartyAgentEnablementPath != "" {
-					foundAgents = true
+				if payload.Props.Agents != nil {
 					if page.PartnerAgents == nil {
 						page.PartnerAgents = map[string]*bool{}
 					}
 				}
 				for _, agent := range payload.Props.Agents {
-					name := agentName(agent.Name, agent.DisplayName)
+					name := agentName(agent.Name)
 					if name == "" {
 						continue
 					}
@@ -281,7 +282,7 @@ func parseCodingAgent(body []byte) (codingAgentPage, error) {
 	if !foundScope || page.RepositoryScope == "" {
 		return page, fmt.Errorf("Copilot cloud-agent settings could not be read")
 	}
-	if !foundAgents {
+	if !completePartnerAgents(page.PartnerAgents) {
 		return page, fmt.Errorf("Copilot partner-agent settings could not be read")
 	}
 	return page, nil
@@ -300,14 +301,18 @@ func repositoryScope(mode string) string {
 	}
 }
 
-func agentName(name, displayName string) string {
+func agentName(name string) string {
 	switch name {
 	case "anthropic-code-agent":
 		return "claude"
 	case "openai-code-agent":
 		return "codex"
 	}
-	return strings.ToLower(strings.TrimSpace(displayName))
+	return ""
+}
+
+func completePartnerAgents(agents map[string]*bool) bool {
+	return agents != nil && agents["claude"] != nil && agents["codex"] != nil
 }
 
 func settingBool(value string) *bool {

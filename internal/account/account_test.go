@@ -59,6 +59,11 @@ func TestGitHubAccountRiskAndIncomplete(t *testing.T) {
 	if !clean.GitHubIncomplete() {
 		t.Fatal("missing GitHub model-training setting was not incomplete")
 	}
+	clean.GitHubCopilot.ModelTraining = &off
+	delete(clean.GitHubCopilot.PartnerAgents, "codex")
+	if !clean.GitHubIncomplete() {
+		t.Fatal("missing Codex partner-agent setting was not incomplete")
+	}
 }
 
 func TestGitHubBrowserSessionsMergeByLogin(t *testing.T) {
@@ -74,7 +79,7 @@ func TestGitHubBrowserSessionsMergeByLogin(t *testing.T) {
 		},
 	}
 	mergeGitHub(index.get("github", result.Login), result, "Chrome")
-	mergeGitHub(index.get("github", result.Login), result, "Safari")
+	mergeGitHub(index.get("github", result.Login), githubprivacy.Result{OK: true, Login: "octocat"}, "Safari")
 
 	accounts := index.accounts()
 	if len(accounts) != 1 {
@@ -100,7 +105,7 @@ func TestSkippedSessionMakesReportIndeterminate(t *testing.T) {
 			Provider: "github", Login: "octocat", Plan: "Copilot Pro",
 			GitHubCopilot: &githubprivacy.Settings{
 				ModelTraining: &off, CloudAgentRepositories: "none",
-				PartnerAgents: map[string]*bool{},
+				PartnerAgents: map[string]*bool{"claude": &off, "codex": &off},
 			},
 		}},
 		Skipped: []string{"Chrome (GitHub): expired session"},

@@ -45,7 +45,8 @@ func (a *Account) Risk() bool {
 func (a *Account) GitHubIncomplete() bool {
 	return a.Provider == "github" && (a.Plan == "" || a.GitHubCopilot == nil ||
 		a.GitHubCopilot.ModelTraining == nil || a.GitHubCopilot.CloudAgentRepositories == "" ||
-		a.GitHubCopilot.PartnerAgents == nil)
+		a.GitHubCopilot.PartnerAgents == nil || a.GitHubCopilot.PartnerAgents["claude"] == nil ||
+		a.GitHubCopilot.PartnerAgents["codex"] == nil)
 }
 
 // CodexTrainingUnknown reports whether a Codex CLI account was found without

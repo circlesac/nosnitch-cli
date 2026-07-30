@@ -18,6 +18,10 @@ func TestParseFeatures(t *testing.T) {
 <input name="authenticity_token" value="csrf-value">
 <input name="_method" value="put">
 <input name="telemetry" value="enabled">
+</form>
+<form action="/settings/unrelated">
+<input name="authenticity_token" value="wrong-token">
+<input name="telemetry" value="disabled">
 </form></body></html>`))
 	if err != nil {
 		t.Fatal(err)
@@ -30,6 +34,28 @@ func TestParseFeatures(t *testing.T) {
 	}
 	if page.FormAction != "/settings/copilot" || page.AuthenticityToken != "csrf-value" {
 		t.Fatalf("parseFeatures() form = %#v", page)
+	}
+}
+
+func TestParseCodingAgentRequiresExpectedAgents(t *testing.T) {
+	tests := []struct {
+		name   string
+		agents []map[string]any
+	}{
+		{"empty agents", []map[string]any{}},
+		{"unknown agent", []map[string]any{{"name": "unknown-agent", "displayName": "Other", "enabled": true}}},
+		{"only Claude", []map[string]any{{"name": "anthropic-code-agent", "displayName": "Claude", "enabled": false}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			page, err := parseCodingAgent([]byte(codingAgentHTMLWithAgents("all_repos", 0, tt.agents)))
+			if err == nil || !strings.Contains(err.Error(), "partner-agent") {
+				t.Fatalf("parseCodingAgent() = %#v, %v", page, err)
+			}
+			if page.RepositoryScope != "all" {
+				t.Fatalf("partial repository scope = %q", page.RepositoryScope)
+			}
+		})
 	}
 }
 
@@ -73,6 +99,31 @@ func TestCheckWithReportsIncompleteSettings(t *testing.T) {
 	encoded, _ := json.Marshal(result)
 	if strings.Contains(string(encoded), "not-printed") || strings.Contains(string(encoded), "csrf") {
 		t.Fatalf("result leaked credentials: %s", encoded)
+	}
+}
+
+func TestCheckWithPreservesPartialCodingAgentSettings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case featuresPath:
+			fmt.Fprint(w, `<meta name="user-login" content="octocat">
+<p>GitHub Copilot Pro is active for your account</p>
+<form action="/settings/copilot"><input name="authenticity_token" value="csrf-value"><input name="telemetry" value="disabled"></form>`)
+		case codingAgentPath:
+			fmt.Fprint(w, codingAgentHTMLWithAgents("all_repos", 0, []map[string]any{
+				{"name": "anthropic-code-agent", "displayName": "Claude", "enabled": false},
+			}))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result := checkWith(server.Client(), server.URL, map[string]string{"session": "secret"})
+	if !result.OK || result.Complete() || result.Settings.CloudAgentRepositories != "all" ||
+		result.Settings.PartnerAgents["claude"] == nil || result.Settings.PartnerAgents["codex"] != nil ||
+		!strings.Contains(result.Reason, "partner-agent") {
+		t.Fatalf("checkWith() = %#v", result)
 	}
 }
 
@@ -148,7 +199,7 @@ func TestOffWithRejectsUnexpectedFormAction(t *testing.T) {
 	defer server.Close()
 
 	result := offWith(server.Client(), server.URL, map[string]string{"session": "secret"})
-	if result.OK || posted || !strings.Contains(result.Reason, "update form") {
+	if result.OK || posted || !strings.Contains(result.Reason, "could not be read") {
 		t.Fatalf("offWith() = %#v, posted=%v", result, posted)
 	}
 }
@@ -164,6 +215,13 @@ func TestRepositoryScope(t *testing.T) {
 }
 
 func codingAgentHTML(mode string, selected int, claude, codex bool) string {
+	return codingAgentHTMLWithAgents(mode, selected, []map[string]any{
+		{"name": "anthropic-code-agent", "displayName": "Claude", "enabled": claude},
+		{"name": "openai-code-agent", "displayName": "Codex", "enabled": codex},
+	})
+}
+
+func codingAgentHTMLWithAgents(mode string, selected int, agents []map[string]any) string {
 	selection := make([]map[string]any, selected)
 	repositoryPayload := map[string]any{"props": map[string]any{
 		"mode":                    mode,
@@ -172,10 +230,7 @@ func codingAgentHTML(mode string, selected int, claude, codex bool) string {
 	}}
 	agentPayload := map[string]any{"props": map[string]any{
 		"third_party_agent_enablement_callback_path": "/settings/copilot/coding_agent/toggle_third_party_agents_enablement",
-		"agents": []map[string]any{
-			{"name": "anthropic-code-agent", "displayName": "Claude", "enabled": claude},
-			{"name": "openai-code-agent", "displayName": "Codex", "enabled": codex},
-		},
+		"agents": agents,
 	}}
 	repositoryData, _ := json.Marshal(repositoryPayload)
 	agentData, _ := json.Marshal(agentPayload)

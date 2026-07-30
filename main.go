@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/circlesac/nosnitch-cli/internal/account"
@@ -439,7 +438,12 @@ func turnOffGitHub(retryCommand string) offOutcome {
 			fdaBlocked = true
 			continue
 		}
-		if err != nil || jar == nil {
+		if err != nil {
+			outcome.indeterminate = true
+			fmt.Println(c("  ! "+browser.Name+" (GitHub): session could not be read", yel))
+			continue
+		}
+		if jar == nil {
 			continue
 		}
 		checked := githubprivacy.CheckWith(jar)
@@ -447,6 +451,10 @@ func turnOffGitHub(retryCommand string) offOutcome {
 			outcome.indeterminate = true
 			fmt.Println(c("  ! "+browser.Name+" (GitHub): "+checked.Reason, yel))
 			continue
+		}
+		if checked.Reason != "" {
+			outcome.indeterminate = true
+			fmt.Println(c("  ! "+browser.Name+" (GitHub): "+checked.Reason, yel))
 		}
 		if seen[checked.Login] {
 			continue
@@ -677,14 +685,12 @@ func printGitHubCopilot(settings *githubprivacy.Settings) {
 		field("Partner agents", "UNKNOWN", yel, "agent settings could not be read")
 		return
 	}
-	names := make([]string, 0, len(settings.PartnerAgents))
-	for name := range settings.PartnerAgents {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		flagRow(capitalize(name)+" agent", settings.PartnerAgents[name],
-			"enabled wherever coding agents are allowed")
+	for _, name := range []string{"claude", "codex"} {
+		if settings.PartnerAgents[name] == nil {
+			field(capitalize(name)+" agent", "UNKNOWN", yel, "agent setting could not be read")
+			continue
+		}
+		flagRow(capitalize(name)+" agent", settings.PartnerAgents[name], "enabled wherever coding agents are allowed")
 	}
 }
 

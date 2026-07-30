@@ -21,7 +21,7 @@ func safariCookies(path, hostLike string) (map[string]string, error) {
 	}
 	jar := map[string]string{}
 	for _, ck := range parseBinaryCookies(data) {
-		if strings.Contains(ck.domain, hostLike) {
+		if cookieDomainMatches(ck.domain, hostLike) {
 			jar[ck.name] = ck.value
 		}
 	}
@@ -29,6 +29,10 @@ func safariCookies(path, hostLike string) (map[string]string, error) {
 		return nil, nil
 	}
 	return jar, nil
+}
+
+func cookieDomainMatches(domain, host string) bool {
+	return domain == host || domain == "."+host
 }
 
 type bcCookie struct{ domain, name, value string }

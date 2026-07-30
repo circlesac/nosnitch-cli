@@ -89,7 +89,7 @@ func chromiumCookies(b Browser, hostLike string) (map[string]string, error) {
 	// Avoid a credential-store lookup when the browser has no matching session.
 	var n int
 	if err := db.QueryRow(
-		"SELECT COUNT(*) FROM cookies WHERE host_key LIKE ?", "%"+hostLike).Scan(&n); err != nil || n == 0 {
+		"SELECT COUNT(*) FROM cookies WHERE host_key = ? OR host_key = ?", hostLike, "."+hostLike).Scan(&n); err != nil || n == 0 {
 		return nil, nil
 	}
 
@@ -99,7 +99,7 @@ func chromiumCookies(b Browser, hostLike string) (map[string]string, error) {
 		cookieDBVersion, _ = strconv.Atoi(version)
 	}
 	rows, err := db.Query(
-		"SELECT host_key, name, value, encrypted_value FROM cookies WHERE host_key LIKE ?", "%"+hostLike)
+		"SELECT host_key, name, value, encrypted_value FROM cookies WHERE host_key = ? OR host_key = ?", hostLike, "."+hostLike)
 	if err != nil {
 		return nil, fmt.Errorf("query cookies: %w", err)
 	}
