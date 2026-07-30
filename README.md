@@ -37,6 +37,15 @@ nosnitch · AI account privacy check
     Model training    OFF
     Codex training    OFF
 
+  [GitHub Account]
+    Account           you
+    Copilot license   Copilot Pro
+    Discovered via    Chrome
+    Model training    OFF
+    Cloud agent repos SELECTED (2)   review repository selection
+    Claude agent      OFF
+    Codex agent       OFF
+
   ✓ no training or public-sharing exposure found
 ```
 
@@ -52,6 +61,7 @@ the command suitable for CI and local checks.
 | **OpenAI Account** | ChatGPT browser session | ChatGPT and Codex model-training settings |
 | **Claude Account** | Claude Code | Account, plan, and the account-wide “Help improve Claude” setting |
 | **Claude Account** | Claude Desktop or browser session | Publicly shared Claude conversations |
+| **GitHub Account** | GitHub browser session | Copilot license, model-training preference, cloud-agent repository scope, and partner-agent states |
 
 The Claude model-improvement preference applies to consumer Claude chats and
 Claude Code coding sessions. Commercial Claude plans and API usage follow their
@@ -67,6 +77,8 @@ organization's commercial data policy.
   Linux for a read-only request to `/api/oauth/account/settings`.
 - **Claude**: borrows the logged-in Claude Desktop or browser session and reads the same
   `/api/organizations/{id}/shares` endpoint used by claude.ai.
+- **GitHub Copilot**: borrows the logged-in GitHub browser session and reads
+  `/settings/copilot/features` and `/settings/copilot/coding_agent`.
 
 Browser cookies are decrypted locally using macOS Keychain or Linux Secret
 Service. Tokens and cookies are sent only to the corresponding first-party
@@ -110,16 +122,20 @@ nosnitch claude training        # turn off Claude model improvement only
 nosnitch claude training --yes  # turn off without prompting
 nosnitch claude unshare         # remove only public Claude links
 nosnitch claude unshare --yes   # remove links without prompting
+nosnitch github training        # turn off GitHub Copilot model training only
+nosnitch github training --yes  # turn off without prompting
 nosnitch openai --help          # OpenAI-specific help
 nosnitch claude --help          # Claude-specific help
+nosnitch github --help          # GitHub-specific help
 ```
 
 `nosnitch off` disables supported OpenAI training settings, disables Claude's
-account-wide model-improvement setting, and removes detected public Claude chat
-links. Every command that changes account state asks for confirmation unless
-`--yes` is provided. The provider-specific `training` commands change only
-that provider's training settings. `nosnitch claude unshare` changes only
-Claude's public links.
+account-wide model-improvement setting, removes detected public Claude chat
+links, and disables GitHub Copilot model training. It leaves GitHub Copilot
+cloud-agent repository selection and partner-agent switches unchanged. Every
+command that changes account state asks for confirmation unless `--yes` is
+provided. The provider-specific `training` commands change only that provider's
+training settings. `nosnitch claude unshare` changes only Claude's public links.
 
 ## Platform support
 
@@ -134,4 +150,6 @@ Ubuntu); Homebrew installs this dependency automatically.
 
 `nosnitch` reads sensitive local credentials to inspect your settings. Requests
 are read-only unless you explicitly run `off`, a provider-specific `training`
-command, or `claude unshare`.
+command, or `claude unshare`. Credentials, browser cookies, CSRF values, and
+tokens are held in memory only, sent solely to the matching first-party host,
+and never printed or persisted by `nosnitch`.

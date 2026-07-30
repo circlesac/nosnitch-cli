@@ -1,5 +1,5 @@
 // Package account aggregates CLI and browser sources into account-centric
-// OpenAI Account and Claude Account views.
+// OpenAI Account, Claude Account, and GitHub Account views.
 package account
 
 import (
@@ -10,11 +10,13 @@ import (
 	"github.com/circlesac/nosnitch-cli/internal/claude"
 	"github.com/circlesac/nosnitch-cli/internal/codex"
 	"github.com/circlesac/nosnitch-cli/internal/cookies"
+	githubprivacy "github.com/circlesac/nosnitch-cli/internal/github"
 )
 
 type Account struct {
 	Provider            string                      `json:"provider"`
-	Email               string                      `json:"email"`
+	Email               string                      `json:"email,omitempty"`
+	Login               string                      `json:"login,omitempty"`
 	Plan                string                      `json:"plan,omitempty"`
 	Sources             []string                    `json:"sources"`
 	APIDataSharing      *bool                       `json:"api_data_sharing,omitempty"`
@@ -22,6 +24,7 @@ type Account struct {
 	ModelImprovement    *bool                       `json:"model_improvement,omitempty"`
 	SharedConversations []claude.SharedConversation `json:"shared_conversations,omitempty"`
 	SharedChatsChecked  bool                        `json:"shared_chats_checked,omitempty"`
+	GitHubCopilot       *githubprivacy.Settings     `json:"github_copilot,omitempty"`
 }
 
 func (a *Account) Risk() bool {
@@ -33,7 +36,17 @@ func (a *Account) Risk() bool {
 			return true
 		}
 	}
+	if a.GitHubCopilot != nil && truthy(a.GitHubCopilot.ModelTraining) {
+		return true
+	}
 	return truthy(a.ModelImprovement) || len(a.SharedConversations) > 0
+}
+
+func (a *Account) GitHubIncomplete() bool {
+	return a.Provider == "github" && (a.Plan == "" || a.GitHubCopilot == nil ||
+		a.GitHubCopilot.ModelTraining == nil || a.GitHubCopilot.CloudAgentRepositories == "" ||
+		a.GitHubCopilot.PartnerAgents == nil || a.GitHubCopilot.PartnerAgents["claude"] == nil ||
+		a.GitHubCopilot.PartnerAgents["codex"] == nil)
 }
 
 // CodexTrainingUnknown reports whether a Codex CLI account was found without
@@ -69,6 +82,9 @@ func (r Report) Indeterminate() bool {
 	if len(r.Accounts) == 0 {
 		return true
 	}
+	if len(r.Blocked) > 0 || len(r.Skipped) > 0 {
+		return true
+	}
 	for _, a := range r.Accounts {
 		if a.CodexTrainingUnknown() {
 			return true
@@ -77,30 +93,55 @@ func (r Report) Indeterminate() bool {
 			(a.ModelImprovement == nil || !a.SharedChatsChecked) {
 			return true
 		}
+		if a.GitHubIncomplete() {
+			return true
+		}
 	}
 	return false
+}
+
+type accountIndex struct {
+	byIdentity map[string]*Account
+	order      []string
+}
+
+func newAccountIndex() *accountIndex {
+	return &accountIndex{byIdentity: map[string]*Account{}}
+}
+
+func (i *accountIndex) get(provider, identity string) *Account {
+	key := provider + "\x00" + identity
+	if existing, ok := i.byIdentity[key]; ok {
+		return existing
+	}
+	created := &Account{Provider: provider}
+	if provider == "github" {
+		created.Login = identity
+	} else {
+		created.Email = identity
+	}
+	i.byIdentity[key] = created
+	i.order = append(i.order, key)
+	return created
+}
+
+func (i *accountIndex) accounts() []*Account {
+	sort.Strings(i.order)
+	accounts := make([]*Account, 0, len(i.order))
+	for _, key := range i.order {
+		accounts = append(accounts, i.byIdentity[key])
+	}
+	return accounts
 }
 
 // Gather reads supported CLI and browser sessions and groups them by provider
 // plus email, so the same account discovered through multiple sources is merged.
 func Gather() Report {
-	byEmail := map[string]*Account{}
-	order := []string{}
-	get := func(provider, email string) *Account {
-		key := provider + "\x00" + email
-		if a, ok := byEmail[key]; ok {
-			return a
-		}
-		a := &Account{Provider: provider, Email: email}
-		byEmail[key] = a
-		order = append(order, key)
-		return a
-	}
-
+	accounts := newAccountIndex()
 	var rep Report
 
 	if cx := codex.Check(); cx.OK {
-		a := get("openai", cx.Email)
+		a := accounts.get("openai", cx.Email)
 		a.Plan = cx.Plan
 		a.Sources = append(a.Sources, "Codex CLI")
 		v := cx.APIDataSharing
@@ -108,7 +149,7 @@ func Gather() Report {
 	}
 
 	if cc := claude.CheckCode(); cc.OK {
-		a := get("anthropic", cc.Email)
+		a := accounts.get("anthropic", cc.Email)
 		a.Plan = cc.Plan
 		a.Sources = append(a.Sources, "Claude Code")
 		a.ModelImprovement = cc.ModelImprovement
@@ -126,7 +167,7 @@ func Gather() Report {
 			if !res.OK {
 				rep.Skipped = append(rep.Skipped, b.Name+" (OpenAI): "+res.Reason)
 			} else {
-				a := get("openai", res.Email)
+				a := accounts.get("openai", res.Email)
 				a.Sources = appendUnique(a.Sources, b.Name)
 				if a.Training == nil {
 					a.Training = map[string]*bool{}
@@ -144,30 +185,70 @@ func Gather() Report {
 			if !hasBlocked(rep.Blocked, b.Name) {
 				rep.Blocked = append(rep.Blocked, Blocked{b.Name, "needs Full Disk Access"})
 			}
-			continue
+		} else if err != nil {
+			rep.Skipped = append(rep.Skipped, b.Name+" (Claude): "+err.Error())
+		} else if claudeJar != nil {
+			claudeRes := claude.CheckWeb(claudeJar)
+			if !claudeRes.OK {
+				rep.Skipped = append(rep.Skipped, b.Name+" (Claude): "+claudeRes.Reason)
+			} else {
+				a := accounts.get("anthropic", claudeRes.Email)
+				a.Sources = appendUnique(a.Sources, b.Name)
+				if claudeRes.ModelImprovement != nil {
+					a.ModelImprovement = claudeRes.ModelImprovement
+				}
+				a.SharedConversations = appendSharedUnique(a.SharedConversations, claudeRes.SharedConversations)
+				a.SharedChatsChecked = true
+			}
 		}
-		if err != nil || claudeJar == nil {
-			continue
+
+		githubJar, err := b.GitHub()
+		if errors.Is(err, cookies.ErrNeedFullDiskAccess) {
+			if !hasBlocked(rep.Blocked, b.Name) {
+				rep.Blocked = append(rep.Blocked, Blocked{b.Name, "needs Full Disk Access"})
+			}
+		} else if err != nil {
+			rep.Skipped = append(rep.Skipped, b.Name+" (GitHub): "+err.Error())
+		} else if githubJar != nil {
+			result := githubprivacy.CheckWith(githubJar)
+			if !result.OK {
+				rep.Skipped = append(rep.Skipped, b.Name+" (GitHub): "+result.Reason)
+			} else {
+				mergeGitHub(accounts.get("github", result.Login), result, b.Name)
+				if result.Reason != "" {
+					rep.Skipped = append(rep.Skipped, b.Name+" (GitHub): "+result.Reason)
+				}
+			}
 		}
-		claudeRes := claude.CheckWeb(claudeJar)
-		if !claudeRes.OK {
-			rep.Skipped = append(rep.Skipped, b.Name+" (Claude): "+claudeRes.Reason)
-			continue
-		}
-		a := get("anthropic", claudeRes.Email)
-		a.Sources = appendUnique(a.Sources, b.Name)
-		if claudeRes.ModelImprovement != nil {
-			a.ModelImprovement = claudeRes.ModelImprovement
-		}
-		a.SharedConversations = appendSharedUnique(a.SharedConversations, claudeRes.SharedConversations)
-		a.SharedChatsChecked = true
 	}
 
-	sort.Strings(order)
-	for _, e := range order {
-		rep.Accounts = append(rep.Accounts, byEmail[e])
-	}
+	rep.Accounts = accounts.accounts()
 	return rep
+}
+
+func mergeGitHub(account *Account, result githubprivacy.Result, source string) {
+	account.Sources = appendUnique(account.Sources, source)
+	if result.License != "" {
+		account.Plan = result.License
+	}
+	if account.GitHubCopilot == nil {
+		account.GitHubCopilot = &githubprivacy.Settings{}
+	}
+	if result.Settings.ModelTraining != nil {
+		account.GitHubCopilot.ModelTraining = result.Settings.ModelTraining
+	}
+	if result.Settings.CloudAgentRepositories != "" {
+		account.GitHubCopilot.CloudAgentRepositories = result.Settings.CloudAgentRepositories
+		account.GitHubCopilot.SelectedRepositories = result.Settings.SelectedRepositories
+	}
+	if result.Settings.PartnerAgents != nil {
+		if account.GitHubCopilot.PartnerAgents == nil {
+			account.GitHubCopilot.PartnerAgents = map[string]*bool{}
+		}
+		for name, enabled := range result.Settings.PartnerAgents {
+			account.GitHubCopilot.PartnerAgents[name] = enabled
+		}
+	}
 }
 
 func truthy(b *bool) bool { return b != nil && *b }

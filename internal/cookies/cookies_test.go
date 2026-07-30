@@ -28,6 +28,17 @@ func TestDecryptChromiumRejectsWrongHostDigest(t *testing.T) {
 	}
 }
 
+func TestCookieDomainMatches(t *testing.T) {
+	for domain, want := range map[string]bool{
+		"github.com": true, ".github.com": true, "gist.github.com": false,
+		"evilgithub.com": false, ".evilgithub.com": false,
+	} {
+		if got := cookieDomainMatches(domain, "github.com"); got != want {
+			t.Fatalf("cookieDomainMatches(%q) = %v, want %v", domain, got, want)
+		}
+	}
+}
+
 func encryptCookie(scheme string, key, plaintext []byte) []byte {
 	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
 	plaintext = append(plaintext, bytes.Repeat([]byte{byte(padding)}, padding)...)
