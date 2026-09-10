@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/circlesac/nosnitch-cli/internal/account"
+	"github.com/circlesac/nosnitch-cli/internal/chatgpt"
 )
 
 func TestStatusCodeIsIncompleteWhenCodexTrainingIsUnknown(t *testing.T) {
@@ -42,5 +43,20 @@ func TestConfirmationAcceptsYes(t *testing.T) {
 		if strings.Contains(output.String(), "Cancelled.") {
 			t.Fatalf("confirmWith(%q) output = %q", input, output.String())
 		}
+	}
+}
+
+func TestAllTrainingOffRequiresEveryFeature(t *testing.T) {
+	off := false
+	values := map[string]*bool{}
+	for _, feature := range chatgpt.TrainingFeatures {
+		values[feature.Key] = &off
+	}
+	if !allTrainingOff(values) {
+		t.Fatal("allTrainingOff() = false for every explicit false setting")
+	}
+	delete(values, chatgpt.CodexTrainingFeatureKey)
+	if allTrainingOff(values) {
+		t.Fatal("allTrainingOff() = true when a feature is missing")
 	}
 }

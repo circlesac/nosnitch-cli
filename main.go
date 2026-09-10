@@ -959,7 +959,7 @@ func turnOffRegisteredOAuth(provider string) offOutcome {
 			fmt.Println()
 		case "openai":
 			checked := chatgpt.CheckWithAccessToken(credential.AccessToken)
-			if checked.OK && !hasEnabledTraining(checked.Training) {
+			if checked.OK && allTrainingOff(checked.Training) {
 				continue
 			}
 			updated := chatgpt.OffWithAccessToken(credential.AccessToken)
@@ -986,13 +986,17 @@ func turnOffRegisteredOAuth(provider string) offOutcome {
 	return outcome
 }
 
-func hasEnabledTraining(values map[string]*bool) bool {
-	for _, value := range values {
-		if value != nil && *value {
-			return true
+func allTrainingOff(values map[string]*bool) bool {
+	if len(values) != len(chatgpt.TrainingFeatures) {
+		return false
+	}
+	for _, feature := range chatgpt.TrainingFeatures {
+		value, ok := values[feature.Key]
+		if !ok || value == nil || *value {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func turnOffGitHub(retryCommand string) offOutcome {
