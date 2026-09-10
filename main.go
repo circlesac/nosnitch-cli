@@ -692,6 +692,7 @@ func shouldReauthenticate(registered registry.Account, err error) bool {
 		"expired session",
 		"cloudflare block",
 		"signed-in github account not found",
+		"http 401",
 	} {
 		if strings.Contains(message, marker) {
 			return true

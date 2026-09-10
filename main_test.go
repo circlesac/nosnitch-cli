@@ -72,6 +72,9 @@ func TestShouldReauthenticateOnlyForAuthFailures(t *testing.T) {
 	if !shouldReauthenticate(account, errors.New("Claude session expired or blocked (HTTP 401)")) {
 		t.Fatal("shouldReauthenticate() = false for expired session")
 	}
+	if !shouldReauthenticate(account, errors.New("Claude account settings read failed (HTTP 401)")) {
+		t.Fatal("shouldReauthenticate() = false for rejected OAuth token")
+	}
 	if shouldReauthenticate(account, errors.New("request temporarily unavailable")) {
 		t.Fatal("shouldReauthenticate() = true for transient failure")
 	}
