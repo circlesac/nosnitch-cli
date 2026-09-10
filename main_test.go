@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/circlesac/nosnitch-cli/internal/account"
 	"github.com/circlesac/nosnitch-cli/internal/chatgpt"
+	"github.com/circlesac/nosnitch-cli/internal/oauth"
+	"github.com/circlesac/nosnitch-cli/internal/registry"
 )
 
 func TestStatusCodeIsIncompleteWhenCodexTrainingIsUnknown(t *testing.T) {
@@ -58,5 +61,18 @@ func TestAllTrainingOffRequiresEveryFeature(t *testing.T) {
 	delete(values, chatgpt.CodexTrainingFeatureKey)
 	if allTrainingOff(values) {
 		t.Fatal("allTrainingOff() = true when a feature is missing")
+	}
+}
+
+func TestShouldReauthenticateOnlyForAuthFailures(t *testing.T) {
+	account := registry.Account{Provider: "anthropic", AuthKind: "oauth"}
+	if !shouldReauthenticate(account, oauth.ErrReauth) {
+		t.Fatal("shouldReauthenticate() = false for ErrReauth")
+	}
+	if !shouldReauthenticate(account, errors.New("Claude session expired or blocked (HTTP 401)")) {
+		t.Fatal("shouldReauthenticate() = false for expired session")
+	}
+	if shouldReauthenticate(account, errors.New("request temporarily unavailable")) {
+		t.Fatal("shouldReauthenticate() = true for transient failure")
 	}
 }

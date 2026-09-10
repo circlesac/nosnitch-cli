@@ -115,8 +115,8 @@ curl -fsSL https://github.com/circlesac/nosnitch-cli/releases/latest/download/in
 |---|---|
 | `nosnitch check` | Read all currently available CLI and browser sessions. |
 | `nosnitch check --json` | Emit the same report as stable JSON. |
-| `nosnitch check --account <id>` | Check one registered account by ID or email. |
-| `nosnitch check --all` | Check every registered account from its cached credential. |
+| `nosnitch check --account <id>` | Check one registered account by ID or email; prompt to renew its authentication when needed. |
+| `nosnitch check --all` | Check every registered account from its cached credential and renew accounts whose authentication has expired. |
 | `nosnitch account add <provider>` | Authenticate, infer the account identity, and save its credential. Supported providers are `openai`, `anthropic`/`claude`, and `github`. |
 | `nosnitch account list` | List registered IDs and redacted metadata. |
 | `nosnitch account remove <id>` | Remove account metadata and its cached credential. |
@@ -135,9 +135,11 @@ Credentials are stored separately under
 with hashed filenames and mode `0600`. `account add openai` and
 `account add anthropic` use PKCE/OAuth. Browser-backed providers open the
 first-party login page, wait for a readable session, validate its identity, and
-cache only the matching cookies. `check --all` refreshes expiring OAuth
-credentials, stores rotated refresh tokens, and marks only the affected account
-as requiring reauthentication after a provider rejection.
+cache only the matching cookies. `check --account` and `check --all` refresh
+expiring OAuth credentials, store rotated refresh tokens, and reopen the
+matching first-party login flow when a credential is missing or rejected.
+The renewed identity must match the registered account before its cached
+credential is replaced.
 
 `nosnitch off` disables supported OpenAI training settings, disables Claude's
 account-wide model-improvement setting, removes detected public Claude chat
