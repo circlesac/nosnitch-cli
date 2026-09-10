@@ -95,10 +95,22 @@ func runAccountCommand() int {
 			return 2
 		}
 		provider := os.Args[3]
-		fmt.Printf("Authenticate %s, then enter account identity: ", provider)
+		rep := account.Gather()
 		var id string
-		if _, e := fmt.Scanln(&id); e != nil || id == "" {
-			fmt.Fprintln(os.Stderr, "account identity required")
+		for _, discovered := range rep.Accounts {
+			if discovered.Provider != provider {
+				continue
+			}
+			id = discovered.Email
+			if id == "" {
+				id = discovered.Login
+			}
+			if id != "" {
+				break
+			}
+		}
+		if id == "" {
+			fmt.Fprintf(os.Stderr, "no logged-in %s session found; authenticate with the provider and retry\n", provider)
 			return 2
 		}
 		a := registry.Account{ID: provider + ":" + id, Provider: provider, Email: id, UpdatedAt: time.Now().UTC()}
