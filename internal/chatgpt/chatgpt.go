@@ -278,6 +278,7 @@ func offWithAccess(client tls_client.HttpClient, cookieHeader, accountID, device
 			res.Results[f.Key] = "off"
 		} else {
 			res.Results[f.Key] = fmt.Sprintf("failed (HTTP %d)", status)
+			res.OK = false
 		}
 	}
 	return res

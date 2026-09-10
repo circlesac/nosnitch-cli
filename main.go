@@ -880,6 +880,13 @@ func turnOffOpenAI(retryCommand string) offOutcome {
 		}
 		r := chatgpt.OffWith(jar)
 		if !r.OK {
+			if r.Email != "" {
+				outcome.failed = true
+				fmt.Println(c("  ! "+r.Email+" (OpenAI): "+r.Reason, yel))
+			} else {
+				outcome.indeterminate = true
+				fmt.Println(c("  ! "+b.Name+" (OpenAI): "+r.Reason, yel))
+			}
 			continue
 		}
 		outcome.acted = true
