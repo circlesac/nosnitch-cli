@@ -8,12 +8,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 	"github.com/circlesac/nosnitch-cli/internal/claude"
 	"github.com/circlesac/nosnitch-cli/internal/cookies"
 	githubprivacy "github.com/circlesac/nosnitch-cli/internal/github"
+	"github.com/circlesac/nosnitch-cli/internal/oauth"
 	"github.com/circlesac/nosnitch-cli/internal/registry"
 )
 
@@ -96,36 +99,40 @@ func runAccountCommand() int {
 			return 2
 		}
 		provider := os.Args[3]
-		rep := account.Gather()
-		var id string
-		for _, discovered := range rep.Accounts {
-			if discovered.Provider != provider {
-				continue
+		provider = normalizeProvider(provider)
+		if provider == "openai" || provider == "anthropic" {
+			token, identity, err := (oauth.Client{}).Login(context.Background(), provider)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 2
 			}
-			id = discovered.Email
-			if id == "" {
-				id = discovered.Login
+			subject := identity.Subject
+			if subject == "" {
+				subject = identity.Email
 			}
-			if id != "" {
-				break
+			id := provider + ":" + subject
+			credential := registry.Credential{Kind: "oauth", AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, IDToken: token.IDToken, ExpiresAt: token.ExpiresAt}
+			if browserCandidates, browserErr := discoverBrowserAccount(provider); browserErr == nil && len(browserCandidates) == 1 &&
+				strings.EqualFold(browserCandidates[0].account.Email, identity.Email) {
+				credential.Cookies = browserCandidates[0].credential.Cookies
 			}
+			if err := registry.Register(registry.Account{ID: id, Provider: provider, Email: identity.Email, Subject: identity.Subject, Organization: identity.Organization, AuthKind: "oauth", UpdatedAt: time.Now().UTC()}, credential); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 2
+			}
+			fmt.Printf("registered %s (%s)\n", id, identity.Email)
+			return 0
 		}
-		if id == "" {
-			url := map[string]string{"openai": "https://chatgpt.com/", "anthropic": "https://claude.ai/", "github": "https://github.com/settings/copilot"}[provider]
-			if url != "" {
-				_ = exec.Command("open", url).Start()
-				fmt.Fprintf(os.Stderr, "no logged-in %s session found; opened %s, then retry this command\n", provider, url)
-			} else {
-				fmt.Fprintf(os.Stderr, "no logged-in %s session found; authenticate with the provider and retry\n", provider)
-			}
+		a, credential, err := waitForBrowserAccount(provider)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
-		a := registry.Account{ID: provider + ":" + id, Provider: provider, Email: id, UpdatedAt: time.Now().UTC()}
-		if e := registry.Upsert(a); e != nil {
-			fmt.Fprintln(os.Stderr, e)
+		if err := registry.Register(a, credential); err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
-		fmt.Printf("registered %s\n", a.ID)
+		fmt.Printf("registered %s (%s)\n", a.ID, a.Email)
 		return 0
 	case "remove":
 		if len(os.Args) < 4 {
@@ -168,7 +175,7 @@ Usage:
 
   nosnitch version
 
-  nosnitch account add <provider>       register an account after authentication
+  nosnitch account add <provider>       authenticate and register an account
   nosnitch account list                 list registered accounts
   nosnitch account remove <account-id>  remove an account and cached credential
   nosnitch check --account <account-id>  check one discovered account
@@ -311,42 +318,247 @@ func runUnshare(yes bool) int {
 }
 
 func runStatus(asJSON bool) int {
+	accountID := flagValue("--account")
+	if hasFlag("--account") && accountID == "" {
+		fmt.Fprintln(os.Stderr, "missing account id after --account")
+		return 2
+	}
+	if accountID != "" || hasFlag("--all") {
+		return runRegisteredStatus(asJSON, accountID)
+	}
 	rep := account.Gather()
-	if hasFlag("--all") {
-		registered, err := registry.Load()
+	if asJSON {
+		out, _ := json.MarshalIndent(rep, "", "  ")
+		fmt.Println(string(out))
+		return statusCode(rep)
+	}
+	printStatus(rep)
+	return statusCode(rep)
+}
+
+var errBrowserSessionMissing = errors.New("no authenticated browser session found")
+
+func normalizeProvider(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "claude":
+		return "anthropic"
+	case "chatgpt":
+		return "openai"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+type browserAccountCandidate struct {
+	account    registry.Account
+	credential registry.Credential
+}
+
+func discoverBrowserAccount(provider string) ([]browserAccountCandidate, error) {
+	seen := map[string]bool{}
+	var candidates []browserAccountCandidate
+	var blocked []string
+	for _, browser := range cookies.Installed() {
+		var (
+			jar  map[string]string
+			err  error
+			id   string
+			mail string
+			org  string
+		)
+		switch provider {
+		case "openai":
+			jar, err = browser.ChatGPT()
+			if err == nil && jar != nil {
+				result := chatgpt.CheckWith(jar)
+				if result.OK {
+					mail, id = result.Email, result.Email
+				}
+			}
+		case "anthropic":
+			jar, err = browser.Claude()
+			if err == nil && jar != nil {
+				result := claude.CheckWeb(jar)
+				if result.OK {
+					mail, id = result.Email, result.Email
+				}
+			}
+		case "github":
+			jar, err = browser.GitHub()
+			if err == nil && jar != nil {
+				result := githubprivacy.CheckWith(jar)
+				if result.OK {
+					id = result.Login
+				}
+			}
+		default:
+			return nil, fmt.Errorf("unsupported provider: %s", provider)
+		}
+		if errors.Is(err, cookies.ErrNeedFullDiskAccess) {
+			blocked = append(blocked, browser.Name)
+			continue
+		}
+		if err != nil || jar == nil || id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		candidates = append(candidates, browserAccountCandidate{
+			account: registry.Account{
+				ID:           provider + ":" + id,
+				Provider:     provider,
+				Email:        mail,
+				Organization: org,
+				UpdatedAt:    time.Now().UTC(),
+				AuthKind:     "browser",
+			},
+			credential: registry.Credential{Kind: "cookie", Cookies: jar},
+		})
+	}
+	if len(candidates) == 0 && len(blocked) > 0 {
+		return nil, fmt.Errorf("%s browser session is unreadable; grant Full Disk Access and retry", strings.Join(blocked, ", "))
+	}
+	return candidates, nil
+}
+
+func waitForBrowserAccount(provider string) (registry.Account, registry.Credential, error) {
+	candidates, err := discoverBrowserAccount(provider)
+	if err != nil {
+		return registry.Account{}, registry.Credential{}, err
+	}
+	if len(candidates) == 1 {
+		return candidates[0].account, candidates[0].credential, nil
+	}
+	if len(candidates) > 1 {
+		ids := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			ids = append(ids, candidate.account.ID)
+		}
+		return registry.Account{}, registry.Credential{}, fmt.Errorf("multiple authenticated %s sessions found (%s); use one browser profile at a time", provider, strings.Join(ids, ", "))
+	}
+
+	loginURL := map[string]string{
+		"anthropic": "https://claude.ai/",
+		"github":    "https://github.com/settings/copilot",
+		"openai":    "https://chatgpt.com/",
+	}[provider]
+	if loginURL == "" {
+		return registry.Account{}, registry.Credential{}, fmt.Errorf("unsupported provider: %s", provider)
+	}
+	if err := openURL(loginURL); err != nil {
+		return registry.Account{}, registry.Credential{}, fmt.Errorf("open %s login page: %w", provider, err)
+	}
+	fmt.Fprintf(os.Stderr, "sign in to %s in the browser; waiting for the session\n", provider)
+	deadline := time.Now().Add(5 * time.Minute)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		candidates, err = discoverBrowserAccount(provider)
 		if err != nil {
-			rep.Skipped = append(rep.Skipped, "account registry: "+err.Error())
-		} else {
-			found := map[string]bool{}
-			for _, a := range rep.Accounts {
-				identity := a.Email
-				if identity == "" {
-					identity = a.Login
-				}
-				found[a.Provider+":"+identity] = true
-			}
-			for _, a := range registered {
-				if !found[a.ID] {
-					rep.Skipped = append(rep.Skipped, a.ID+": no active authenticated session")
-				}
-			}
+			return registry.Account{}, registry.Credential{}, err
+		}
+		if len(candidates) == 1 {
+			return candidates[0].account, candidates[0].credential, nil
+		}
+		if len(candidates) > 1 {
+			return registry.Account{}, registry.Credential{}, fmt.Errorf("multiple authenticated %s sessions found (%s); use one browser profile at a time", provider, candidateIDs(candidates))
+		}
+		if time.Now().After(deadline) {
+			return registry.Account{}, registry.Credential{}, fmt.Errorf("%w for %s before timeout", errBrowserSessionMissing, provider)
+		}
+		<-ticker.C
+	}
+}
+
+func candidateIDs(candidates []browserAccountCandidate) string {
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.account.ID)
+	}
+	return strings.Join(ids, ", ")
+}
+
+func openURL(target string) error {
+	var command *exec.Cmd
+	switch {
+	case strings.TrimSpace(target) == "":
+		return errors.New("login URL is empty")
+	case runtime.GOOS == "darwin":
+		command = exec.Command("open", target)
+	case runtime.GOOS == "windows":
+		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+	default:
+		command = exec.Command("xdg-open", target)
+	}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	return command.Process.Release()
+}
+
+func flagValue(name string) string {
+	for i, a := range os.Args {
+		if a == name && i+1 < len(os.Args) {
+			return os.Args[i+1]
 		}
 	}
-	if id := flagValue("--account"); id != "" {
-		rep.Skipped = nil
-		filtered := rep.Accounts[:0]
-		for _, a := range rep.Accounts {
-			identity := a.Email
-			if identity == "" {
-				identity = a.Login
-			}
-			if a.Provider+":"+identity == id || identity == id {
-				filtered = append(filtered, a)
-			}
+	return ""
+}
+
+func runRegisteredStatus(asJSON bool, selector string) int {
+	registered, err := registry.Load()
+	if err != nil {
+		rep := account.Report{Skipped: []string{"account registry: " + err.Error()}}
+		if asJSON {
+			out, _ := json.MarshalIndent(rep, "", "  ")
+			fmt.Println(string(out))
+		} else {
+			printStatus(rep)
 		}
-		rep.Accounts = filtered
-		if len(filtered) == 0 {
-			rep.Skipped = append(rep.Skipped, "registered account not found: "+id)
+		return statusCode(rep)
+	}
+	if len(registered) == 0 {
+		rep := account.Report{Skipped: []string{"no registered accounts; run `nosnitch account add <provider>`"}}
+		if asJSON {
+			out, _ := json.MarshalIndent(rep, "", "  ")
+			fmt.Println(string(out))
+		} else {
+			printStatus(rep)
+		}
+		return statusCode(rep)
+	}
+
+	var selected []registry.Account
+	for _, registeredAccount := range registered {
+		if selector == "" || registeredAccount.ID == selector || registeredAccount.Email == selector {
+			selected = append(selected, registeredAccount)
+		}
+	}
+	if selector != "" && len(selected) == 0 {
+		rep := account.Report{Skipped: []string{"registered account not found: " + selector}}
+		if asJSON {
+			out, _ := json.MarshalIndent(rep, "", "  ")
+			fmt.Println(string(out))
+		} else {
+			printStatus(rep)
+		}
+		return statusCode(rep)
+	}
+
+	rep := account.Report{}
+	for _, registeredAccount := range selected {
+		result, checkErr := checkRegisteredAccount(registeredAccount)
+		if result != nil {
+			rep.Accounts = append(rep.Accounts, result)
+		}
+		status := "clean"
+		if checkErr != nil {
+			status = "error: " + checkErr.Error()
+			rep.Skipped = append(rep.Skipped, registeredAccount.ID+": "+checkErr.Error())
+		} else if result.Risk() {
+			status = "exposure"
+		}
+		if err := registry.UpdateStatus(registeredAccount.ID, status, time.Now().UTC()); err != nil {
+			rep.Skipped = append(rep.Skipped, registeredAccount.ID+": could not update status")
 		}
 	}
 	if asJSON {
@@ -358,13 +570,142 @@ func runStatus(asJSON bool) int {
 	return statusCode(rep)
 }
 
-func flagValue(name string) string {
-	for i, a := range os.Args {
-		if a == name && i+1 < len(os.Args) {
-			return os.Args[i+1]
+func checkRegisteredAccount(registered registry.Account) (*account.Account, error) {
+	result := &account.Account{
+		Provider: registered.Provider,
+		Email:    registered.Email,
+		Sources:  []string{"registered credential"},
+	}
+	if registered.Provider == "github" {
+		result.Login = registered.Email
+		result.Email = ""
+	}
+	credential, err := registry.LoadCredential(registered.ID)
+	if err != nil {
+		return result, errors.New("authentication required (credential cache missing)")
+	}
+
+	if credential.Kind == "oauth" {
+		credential, err = refreshRegisteredCredential(registered, credential)
+		if err != nil {
+			return result, err
+		}
+		switch registered.Provider {
+		case "anthropic":
+			identity, identifyErr := (oauth.Client{}).Identify(context.Background(), registered.Provider, oauth.Token{
+				AccessToken: credential.AccessToken,
+				IDToken:     credential.IDToken,
+			})
+			if identifyErr != nil {
+				return result, identifyErr
+			}
+			if !sameIdentity(registered, identity.Email, identity.Subject) {
+				return result, errors.New("credential belongs to a different account")
+			}
+			checked := claude.CheckOAuthToken(credential.AccessToken)
+			result.ModelImprovement = checked.ModelImprovement
+			if len(credential.Cookies) > 0 {
+				webChecked := claude.CheckWeb(credential.Cookies)
+				if webChecked.OK {
+					result.Email = webChecked.Email
+					result.SharedConversations = webChecked.SharedConversations
+					result.SharedChatsChecked = true
+				}
+			}
+			if !checked.OK {
+				return result, errors.New(checked.Reason)
+			}
+			return result, nil
+		case "openai":
+			checked := chatgpt.Result{}
+			if len(credential.Cookies) > 0 {
+				checked = chatgpt.CheckWith(credential.Cookies)
+			}
+			if !checked.OK {
+				checked = chatgpt.CheckWithAccessToken(credential.AccessToken)
+			}
+			result.Training = checked.Training
+			if !checked.OK {
+				return result, errors.New(checked.Reason)
+			}
+			return result, nil
+		default:
+			return result, errors.New("OAuth checks are unsupported for " + registered.Provider)
 		}
 	}
-	return ""
+
+	switch registered.Provider {
+	case "anthropic":
+		checked := claude.CheckWeb(credential.Cookies)
+		result.Email = checked.Email
+		result.ModelImprovement = checked.ModelImprovement
+		result.SharedConversations = checked.SharedConversations
+		result.SharedChatsChecked = checked.OK
+		if !checked.OK {
+			return result, errors.New(checked.Reason)
+		}
+	case "openai":
+		checked := chatgpt.CheckWith(credential.Cookies)
+		result.Email = checked.Email
+		result.Training = checked.Training
+		if !checked.OK {
+			return result, errors.New(checked.Reason)
+		}
+	case "github":
+		checked := githubprivacy.CheckWith(credential.Cookies)
+		result.Login = checked.Login
+		result.Plan = checked.License
+		result.GitHubCopilot = &checked.Settings
+		if !checked.OK {
+			return result, errors.New(checked.Reason)
+		}
+	default:
+		return result, errors.New("unsupported provider: " + registered.Provider)
+	}
+	if registered.Email != "" && result.Email != "" && !strings.EqualFold(registered.Email, result.Email) {
+		return result, errors.New("credential belongs to a different account")
+	}
+	if registered.Email != "" && result.Login != "" && !strings.EqualFold(registered.Email, result.Login) {
+		return result, errors.New("credential belongs to a different account")
+	}
+	return result, nil
+}
+
+func refreshRegisteredCredential(registered registry.Account, credential registry.Credential) (registry.Credential, error) {
+	now := time.Now().UTC()
+	token := oauth.Token{
+		AccessToken:  credential.AccessToken,
+		RefreshToken: credential.RefreshToken,
+		IDToken:      credential.IDToken,
+		ExpiresAt:    credential.ExpiresAt,
+	}
+	needsRefresh := token.AccessToken == "" ||
+		(!token.ExpiresAt.IsZero() && !token.ExpiresAt.After(now.Add(30*time.Second)))
+	if !needsRefresh {
+		return credential, nil
+	}
+	if token.RefreshToken == "" {
+		return credential, oauth.ErrReauth
+	}
+	refreshed, err := (oauth.Client{}).Refresh(context.Background(), registered.Provider, token)
+	if err != nil {
+		return credential, err
+	}
+	credential.AccessToken = refreshed.AccessToken
+	credential.RefreshToken = refreshed.RefreshToken
+	credential.IDToken = refreshed.IDToken
+	credential.ExpiresAt = refreshed.ExpiresAt
+	if err := registry.SaveCredential(registered.ID, credential); err != nil {
+		return credential, err
+	}
+	return credential, nil
+}
+
+func sameIdentity(registered registry.Account, email, subject string) bool {
+	if registered.Subject != "" && subject != "" && registered.Subject != subject {
+		return false
+	}
+	return registered.Email == "" || email == "" || strings.EqualFold(registered.Email, email)
 }
 
 func statusCode(rep account.Report) int {

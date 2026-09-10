@@ -113,6 +113,27 @@ func CheckCode() CodeResult {
 		res.Reason = err.Error()
 		return res
 	}
+	settings := checkOAuthToken(token)
+	res.ModelImprovement = settings.ModelImprovement
+	if settings.Reason != "" {
+		res.Reason = settings.Reason
+	}
+	return res
+}
+
+// CheckOAuthToken reads Claude's account-wide model-improvement setting using
+// a caller-provided OAuth access token.
+func CheckOAuthToken(token string) CodeResult {
+	return checkOAuthToken(token)
+}
+
+func checkOAuthToken(token string) CodeResult {
+	res := CodeResult{OK: true}
+	if strings.TrimSpace(token) == "" {
+		res.OK = false
+		res.Reason = "Claude OAuth access token is missing"
+		return res
+	}
 	req, _ := http.NewRequest(http.MethodGet, apiBase+"/api/oauth/account/settings", nil)
 	req.Header = http.Header{
 		"accept":            {"application/json"},
@@ -123,28 +144,28 @@ func CheckCode() CodeResult {
 	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(),
 		tls_client.WithTimeoutSeconds(25), tls_client.WithClientProfile(profiles.Chrome_131))
 	if err != nil {
-		res.Reason = "could not create HTTP client: " + err.Error()
-		return res
+		return CodeResult{Reason: "could not create HTTP client: " + err.Error()}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		res.Reason = "Claude account settings read failed: " + err.Error()
-		return res
+		return CodeResult{Reason: "Claude account settings read failed: " + err.Error()}
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		res.Reason = "Claude account settings read failed (HTTP " + strconv.Itoa(resp.StatusCode) + ")"
-		return res
+		return CodeResult{Reason: "Claude account settings read failed (HTTP " + strconv.Itoa(resp.StatusCode) + ")"}
 	}
 	var settings struct {
 		GroveEnabled *bool `json:"grove_enabled"`
 	}
 	if err := json.Unmarshal(body, &settings); err != nil {
-		res.Reason = "Claude account settings parse error: " + err.Error()
-		return res
+		return CodeResult{Reason: "Claude account settings parse error: " + err.Error()}
 	}
 	res.ModelImprovement = settings.GroveEnabled
+	if settings.GroveEnabled == nil {
+		res.OK = false
+		res.Reason = "Claude account settings did not include model-improvement state"
+	}
 	return res
 }
 

@@ -53,6 +53,46 @@ type Result struct {
 	Training map[string]*bool `json:"training,omitempty"` // feature key -> value (nil = not present)
 }
 
+// CheckWithAccessToken attempts a read-only settings request with a stored
+// OAuth access token. Some OpenAI credentials are web-session scoped and will
+// return unauthorized; callers should then report reauthentication or use a
+// stored browser credential for the same account.
+func CheckWithAccessToken(accessToken string) Result {
+	if strings.TrimSpace(accessToken) == "" {
+		return Result{Reason: "OpenAI access token is missing"}
+	}
+	for _, name := range passProfiles {
+		prof, ok := profiles.MappedTLSClients[name]
+		if !ok {
+			continue
+		}
+		client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(),
+			tls_client.WithTimeoutSeconds(25), tls_client.WithClientProfile(prof))
+		if err != nil {
+			continue
+		}
+		status, body := get(client, "https://chatgpt.com/backend-api/settings/user", "", accessToken)
+		if status != 200 {
+			continue
+		}
+		var payload struct {
+			Settings map[string]any `json:"settings"`
+		}
+		if json.Unmarshal([]byte(body), &payload) != nil {
+			return Result{Reason: "settings parse error"}
+		}
+		result := Result{OK: true, Training: map[string]*bool{}}
+		for _, feature := range TrainingFeatures {
+			if value, ok := payload.Settings[feature.Key].(bool); ok {
+				copy := value
+				result.Training[feature.Key] = &copy
+			}
+		}
+		return result
+	}
+	return Result{Reason: "OpenAI OAuth credential was rejected or web settings require a browser session"}
+}
+
 // CheckWith reads training/data-control flags for the account whose chatgpt.com
 // cookies are in jar (from any browser).
 func CheckWith(jar map[string]string) Result {

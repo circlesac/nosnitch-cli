@@ -111,23 +111,33 @@ curl -fsSL https://github.com/circlesac/nosnitch-cli/releases/latest/download/in
 
 ## Usage
 
-```bash
-nosnitch check                  # human-readable account report
-nosnitch check --json           # machine-readable account report
-nosnitch off                    # clear all detected privacy exposure
-nosnitch off --yes              # skip confirmation
-nosnitch openai training        # turn off OpenAI training settings only
-nosnitch openai training --yes  # turn off without prompting
-nosnitch claude training        # turn off Claude model improvement only
-nosnitch claude training --yes  # turn off without prompting
-nosnitch claude unshare         # remove only public Claude links
-nosnitch claude unshare --yes   # remove links without prompting
-nosnitch github training        # turn off GitHub Copilot model training only
-nosnitch github training --yes  # turn off without prompting
-nosnitch openai --help          # OpenAI-specific help
-nosnitch claude --help          # Claude-specific help
-nosnitch github --help          # GitHub-specific help
-```
+| Command | Behavior |
+|---|---|
+| `nosnitch check` | Read all currently available CLI and browser sessions. |
+| `nosnitch check --json` | Emit the same report as stable JSON. |
+| `nosnitch check --account <id>` | Check one registered account by ID or email. |
+| `nosnitch check --all` | Check every registered account from its cached credential. |
+| `nosnitch account add <provider>` | Authenticate, infer the account identity, and save its credential. Supported providers are `openai`, `anthropic`/`claude`, and `github`. |
+| `nosnitch account list` | List registered IDs and redacted metadata. |
+| `nosnitch account remove <id>` | Remove account metadata and its cached credential. |
+| `nosnitch off` | Clear all supported detected exposure after confirmation. |
+| `nosnitch off --yes` | Clear supported exposure without confirmation. |
+| `nosnitch openai training [--yes]` | Turn off OpenAI training settings. |
+| `nosnitch claude training [--yes]` | Turn off Claude model improvement. |
+| `nosnitch claude unshare [--yes]` | Remove public Claude links. |
+| `nosnitch github training [--yes]` | Turn off GitHub Copilot model training. |
+| `nosnitch <provider> --help` | Show provider-specific help. |
+
+Registered account metadata is stored in
+`$XDG_CONFIG_HOME/nosnitch/accounts.json` (or `~/.config/nosnitch/accounts.json`).
+Credentials are stored separately under
+`$XDG_CACHE_HOME/nosnitch/credentials/` (or `~/.cache/nosnitch/credentials/`)
+with hashed filenames and mode `0600`. `account add openai` and
+`account add anthropic` use PKCE/OAuth. Browser-backed providers open the
+first-party login page, wait for a readable session, validate its identity, and
+cache only the matching cookies. `check --all` refreshes expiring OAuth
+credentials, stores rotated refresh tokens, and marks only the affected account
+as requiring reauthentication after a provider rejection.
 
 `nosnitch off` disables supported OpenAI training settings, disables Claude's
 account-wide model-improvement setting, removes detected public Claude chat
@@ -150,6 +160,6 @@ Ubuntu); Homebrew installs this dependency automatically.
 
 `nosnitch` reads sensitive local credentials to inspect your settings. Requests
 are read-only unless you explicitly run `off`, a provider-specific `training`
-command, or `claude unshare`. Credentials, browser cookies, CSRF values, and
-tokens are held in memory only, sent solely to the matching first-party host,
-and never printed or persisted by `nosnitch`.
+command, or `claude unshare`. Registered OAuth tokens and browser cookies are
+stored in the private XDG cache with mode `0600`, sent solely to the matching
+first-party host, and never printed or included in reports.

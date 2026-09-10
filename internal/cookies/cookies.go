@@ -14,7 +14,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
+	"time"
 	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
@@ -56,9 +59,63 @@ func (b Browser) path() string {
 func Installed() []Browser {
 	var out []Browser
 	for _, b := range known {
-		if _, err := os.Stat(b.path()); err == nil {
-			out = append(out, b)
+		expanded := expandProfiles(b)
+		for _, candidate := range expanded {
+			if _, err := os.Stat(candidate.path()); err == nil {
+				out = append(out, candidate)
+			}
 		}
+	}
+	return out
+}
+
+// expandProfiles discovers Chromium profiles without assuming Default is the
+// only account. Products whose cookie path is not profile-scoped are returned
+// unchanged.
+func expandProfiles(browser Browser) []Browser {
+	marker := string(filepath.Separator) + "Default" + string(filepath.Separator)
+	var root string
+	for _, relPath := range browser.relPaths {
+		if idx := strings.Index(relPath, marker); idx >= 0 {
+			root = relPath[:idx]
+			break
+		}
+	}
+	if root == "" {
+		return []Browser{browser}
+	}
+	profileRoot := filepath.Join(os.Getenv("HOME"), filepath.FromSlash(root))
+	entries, err := os.ReadDir(profileRoot)
+	if err != nil {
+		return []Browser{browser}
+	}
+	var profiles []string
+	for _, entry := range entries {
+		if !entry.IsDir() || (entry.Name() != "Default" && !strings.HasPrefix(entry.Name(), "Profile ")) {
+			continue
+		}
+		profiles = append(profiles, entry.Name())
+	}
+	if len(profiles) == 0 {
+		return []Browser{browser}
+	}
+	sort.Strings(profiles)
+	out := make([]Browser, 0, len(profiles))
+	for _, profile := range profiles {
+		candidate := browser
+		candidate.relPaths = make([]string, 0, len(browser.relPaths))
+		for _, relPath := range browser.relPaths {
+			if idx := strings.Index(relPath, marker); idx >= 0 {
+				candidate.relPaths = append(candidate.relPaths,
+					filepath.ToSlash(filepath.Join(relPath[:idx], profile, relPath[idx+len(marker):])))
+			} else {
+				candidate.relPaths = append(candidate.relPaths, relPath)
+			}
+		}
+		if profile != "Default" {
+			candidate.Name = browser.Name + " (" + profile + ")"
+		}
+		out = append(out, candidate)
 	}
 	return out
 }
@@ -87,9 +144,15 @@ func chromiumCookies(b Browser, hostLike string) (map[string]string, error) {
 	defer cleanup()
 
 	// Avoid a credential-store lookup when the browser has no matching session.
+	expiryColumn := hasColumn(db, "cookies", "expires_utc")
+	where := "host_key = ? OR host_key = ?"
+	args := []any{hostLike, "." + hostLike}
+	if expiryColumn {
+		where = "(" + where + ") AND (expires_utc = 0 OR expires_utc > ?)"
+		args = append(args, chromiumNow())
+	}
 	var n int
-	if err := db.QueryRow(
-		"SELECT COUNT(*) FROM cookies WHERE host_key = ? OR host_key = ?", hostLike, "."+hostLike).Scan(&n); err != nil || n == 0 {
+	if err := db.QueryRow("SELECT COUNT(*) FROM cookies WHERE "+where, args...).Scan(&n); err != nil || n == 0 {
 		return nil, nil
 	}
 
@@ -98,8 +161,11 @@ func chromiumCookies(b Browser, hostLike string) (map[string]string, error) {
 	if db.QueryRow("SELECT value FROM meta WHERE key = 'version'").Scan(&version) == nil {
 		cookieDBVersion, _ = strconv.Atoi(version)
 	}
-	rows, err := db.Query(
-		"SELECT host_key, name, value, encrypted_value FROM cookies WHERE host_key = ? OR host_key = ?", hostLike, "."+hostLike)
+	columns := "host_key, name, value, encrypted_value"
+	if expiryColumn {
+		columns = "host_key, name, value, encrypted_value, expires_utc"
+	}
+	rows, err := db.Query("SELECT "+columns+" FROM cookies WHERE "+where, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query cookies: %w", err)
 	}
@@ -112,7 +178,15 @@ func chromiumCookies(b Browser, hostLike string) (map[string]string, error) {
 	for rows.Next() {
 		var hostKey, name, value string
 		var enc []byte
-		if rows.Scan(&hostKey, &name, &value, &enc) != nil {
+		var expires int64
+		if expiryColumn {
+			if rows.Scan(&hostKey, &name, &value, &enc, &expires) != nil {
+				continue
+			}
+		} else if rows.Scan(&hostKey, &name, &value, &enc) != nil {
+			continue
+		}
+		if expiryColumn && expires != 0 && expires <= chromiumNow() {
 			continue
 		}
 		if value != "" {
@@ -171,12 +245,67 @@ func openCopy(src string) (*sql.DB, func(), error) {
 		return nil, nil, err
 	}
 	tmp.Close()
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sidecar, err := os.Open(src + suffix)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			os.Remove(tmp.Name())
+			return nil, nil, err
+		}
+		sidecarPath := tmp.Name() + suffix
+		sidecarOut, err := os.Create(sidecarPath)
+		if err != nil {
+			sidecar.Close()
+			os.Remove(tmp.Name())
+			return nil, nil, err
+		}
+		_, copyErr := io.Copy(sidecarOut, sidecar)
+		closeErr := sidecarOut.Close()
+		sidecar.Close()
+		if copyErr != nil || closeErr != nil {
+			os.Remove(tmp.Name())
+			os.Remove(sidecarPath)
+			if copyErr != nil {
+				return nil, nil, copyErr
+			}
+			return nil, nil, closeErr
+		}
+	}
 	db, err := sql.Open("sqlite", tmp.Name())
 	if err != nil {
 		os.Remove(tmp.Name())
 		return nil, nil, err
 	}
-	return db, func() { db.Close(); os.Remove(tmp.Name()) }, nil
+	return db, func() {
+		db.Close()
+		os.Remove(tmp.Name())
+		os.Remove(tmp.Name() + "-wal")
+		os.Remove(tmp.Name() + "-shm")
+	}, nil
+}
+
+func chromiumNow() int64 {
+	return (time.Now().UnixNano()/1000 + 11644473600000000)
+}
+
+func hasColumn(db *sql.DB, table, column string) bool {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, primaryKey int
+		var defaultValue any
+		if rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey) == nil && name == column {
+			return true
+		}
+	}
+	return false
 }
 
 func decryptChromium(enc, key []byte, hostKey string, hasHostDigest bool) (string, bool) {

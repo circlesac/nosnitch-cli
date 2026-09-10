@@ -30,6 +30,28 @@ func TestLinuxBrowserDiscoveryPrefersNetworkCookies(t *testing.T) {
 	}
 }
 
+func TestLinuxBrowserDiscoveryEnumeratesProfiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, profile := range []string{"Default", "Profile 1"} {
+		path := filepath.Join(home, ".config/chromium", profile, "Network/Cookies")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	installed := Installed()
+	if len(installed) != 2 {
+		t.Fatalf("Installed() returned %d browsers, want 2: %#v", len(installed), installed)
+	}
+	if installed[0].Name != "Chromium" || installed[1].Name != "Chromium (Profile 1)" {
+		t.Fatalf("profile names = %q, %q", installed[0].Name, installed[1].Name)
+	}
+}
+
 func TestLinuxChromiumCookies(t *testing.T) {
 	tests := []struct {
 		name     string
