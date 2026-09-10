@@ -164,6 +164,7 @@ Usage:
   nosnitch account add <provider>       register an account after authentication
   nosnitch account list                 list registered accounts
   nosnitch account remove <account-id>  remove an account and cached credential
+  nosnitch check --account <account-id>  check one discovered account
 
 Check exit codes:
   0  clean
@@ -303,6 +304,22 @@ func runUnshare(yes bool) int {
 
 func runStatus(asJSON bool) int {
 	rep := account.Gather()
+	if id := flagValue("--account"); id != "" {
+		filtered := rep.Accounts[:0]
+		for _, a := range rep.Accounts {
+			identity := a.Email
+			if identity == "" {
+				identity = a.Login
+			}
+			if a.Provider+":"+identity == id || identity == id {
+				filtered = append(filtered, a)
+			}
+		}
+		rep.Accounts = filtered
+		if len(filtered) == 0 {
+			rep.Skipped = append(rep.Skipped, "registered account not found: "+id)
+		}
+	}
 	if asJSON {
 		out, _ := json.MarshalIndent(rep, "", "  ")
 		fmt.Println(string(out))
@@ -310,6 +327,15 @@ func runStatus(asJSON bool) int {
 	}
 	printStatus(rep)
 	return statusCode(rep)
+}
+
+func flagValue(name string) string {
+	for i, a := range os.Args {
+		if a == name && i+1 < len(os.Args) {
+			return os.Args[i+1]
+		}
+	}
+	return ""
 }
 
 func statusCode(rep account.Report) int {
