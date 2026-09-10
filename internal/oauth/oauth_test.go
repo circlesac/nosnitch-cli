@@ -65,10 +65,13 @@ func TestBuildAuthURLContainsPKCEAndState(t *testing.T) {
 	}
 	query := parsed.Query()
 	for key, want := range map[string]string{
-		"code_challenge":        "challenge",
-		"code_challenge_method": "S256",
-		"state":                 "state",
-		"redirect_uri":          "http://127.0.0.1:1234/callback",
+		"code_challenge":            "challenge",
+		"code_challenge_method":     "S256",
+		"state":                     "state",
+		"redirect_uri":              "http://127.0.0.1:1234/callback",
+		"scope":                     openAIScope,
+		"originator":                "Codex Desktop",
+		"codex_cli_simplified_flow": "true",
 	} {
 		if query.Get(key) != want {
 			t.Fatalf("%s = %q, want %q", key, query.Get(key), want)

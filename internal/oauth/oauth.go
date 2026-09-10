@@ -36,9 +36,15 @@ const (
 
 const (
 	openAIClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
-	openAIScope    = "openid profile email offline_access"
+	openAIScope    = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 	openAIOAuthURL = "https://auth.openai.com/oauth/authorize"
 	openAITokenURL = "https://auth.openai.com/oauth/token"
+)
+
+const (
+	openAIRedirectURI  = "http://localhost:1455/auth/callback"
+	openAIListenAddr   = "127.0.0.1:1455"
+	openAICallbackPath = "/auth/callback"
 )
 
 var ErrReauth = errors.New("reauthentication required")
@@ -100,16 +106,28 @@ func (c Client) Login(ctx context.Context, p string) (Token, Identity, error) {
 		return Token{}, Identity{}, fmt.Errorf("generate OAuth state: %w", err)
 	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listenAddr := "127.0.0.1:0"
+	redirectURI := ""
+	path := "/callback"
+	expectedHost := ""
+	if provider == providerOpenAI {
+		listenAddr = openAIListenAddr
+		redirectURI = openAIRedirectURI
+		path = openAICallbackPath
+		expectedHost = "localhost:1455"
+	}
+
+	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return Token{}, Identity{}, errors.New("start OAuth callback listener")
 	}
 	defer listener.Close()
 
-	port := listener.Addr().(*net.TCPAddr).Port
-	path := "/callback"
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
-	expectedHost := fmt.Sprintf("127.0.0.1:%d", port)
+	if redirectURI == "" {
+		port := listener.Addr().(*net.TCPAddr).Port
+		redirectURI = fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
+		expectedHost = fmt.Sprintf("127.0.0.1:%d", port)
+	}
 
 	exchange := make(chan loginOutcome, 1)
 	var once sync.Once
@@ -480,7 +498,7 @@ func buildAuthURL(provider provider, redirectURI, challenge, state string) (stri
 		query.Set("client_id", openAIClientID)
 		query.Set("scope", openAIScope)
 		query.Set("id_token_add_organizations", "true")
-		query.Set("originator", "opencode")
+		query.Set("originator", "Codex Desktop")
 		query.Set("codex_cli_simplified_flow", "true")
 		return openAIOAuthURL + "?" + query.Encode(), nil
 	default:
