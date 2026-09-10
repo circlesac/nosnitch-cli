@@ -125,8 +125,8 @@ func (c Client) Login(ctx context.Context, p string) (Token, Identity, error) {
 
 	if redirectURI == "" {
 		port := listener.Addr().(*net.TCPAddr).Port
-		redirectURI = fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
-		expectedHost = fmt.Sprintf("127.0.0.1:%d", port)
+		redirectURI = fmt.Sprintf("http://localhost:%d%s", port, path)
+		expectedHost = fmt.Sprintf("localhost:%d", port)
 	}
 
 	exchange := make(chan loginOutcome, 1)
@@ -134,7 +134,7 @@ func (c Client) Login(ctx context.Context, p string) (Token, Identity, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != path || r.Host != expectedHost {
+		if r.Method != http.MethodGet || r.URL.Path != path || !callbackHostMatches(r.Host, expectedHost) {
 			writeCallbackPage(w, "Awaiting authentication")
 			return
 		}
@@ -166,7 +166,7 @@ func (c Client) Login(ctx context.Context, p string) (Token, Identity, error) {
 			return
 		}
 
-		token, tokenErr := c.exchangeAuthCode(r.Context(), provider, code, redirectURI, verifier)
+		token, tokenErr := c.exchangeAuthCode(r.Context(), provider, code, redirectURI, verifier, state)
 		if tokenErr != nil {
 			once.Do(func() { exchange <- loginOutcome{err: tokenErr} })
 			writeCallbackPage(w, "Authentication failed")
@@ -360,7 +360,7 @@ func (c Client) Identify(ctx context.Context, p string, token Token) (Identity, 
 	}
 }
 
-func (c Client) exchangeAuthCode(ctx context.Context, provider provider, code, redirectURI, verifier string) (Token, error) {
+func (c Client) exchangeAuthCode(ctx context.Context, provider provider, code, redirectURI, verifier, state string) (Token, error) {
 	var response tokenResponse
 	var err error
 	switch provider {
@@ -371,6 +371,7 @@ func (c Client) exchangeAuthCode(ctx context.Context, provider provider, code, r
 			"redirect_uri":  redirectURI,
 			"client_id":     anthropicClientID,
 			"code_verifier": verifier,
+			"state":         state,
 		})
 	case providerOpenAI:
 		response, err = c.fetchToken(ctx, openAITokenURL, "application/x-www-form-urlencoded", url.Values{
@@ -600,6 +601,32 @@ func durationFromExpiresIn(expiresIn int64) time.Duration {
 func writeCallbackPage(w http.ResponseWriter, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte("<!doctype html><meta charset=utf-8><title>nosnitch</title><body>" + message + "</body>"))
+}
+
+func callbackHostMatches(actual, expected string) bool {
+	if actual == expected {
+		return true
+	}
+
+	expectedHost, expectedPort, err := net.SplitHostPort(expected)
+	if err != nil {
+		return false
+	}
+	actualHost, actualPort, err := net.SplitHostPort(actual)
+	if err != nil || actualPort != expectedPort {
+		return false
+	}
+
+	return isLoopbackHost(actualHost) && isLoopbackHost(expectedHost)
+}
+
+func isLoopbackHost(host string) bool {
+	switch strings.Trim(host, "[]") {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
 }
 
 func defaultOpenBrowser(target string) error {

@@ -10,6 +10,23 @@ import (
 	"testing"
 )
 
+func TestCallbackHostMatchesLoopbackAliases(t *testing.T) {
+	for _, test := range []struct {
+		actual, expected string
+		want             bool
+	}{
+		{"localhost:1234", "localhost:1234", true},
+		{"127.0.0.1:1234", "localhost:1234", true},
+		{"[::1]:1234", "localhost:1234", true},
+		{"192.168.1.2:1234", "localhost:1234", false},
+		{"localhost:5678", "localhost:1234", false},
+	} {
+		if got := callbackHostMatches(test.actual, test.expected); got != test.want {
+			t.Errorf("callbackHostMatches(%q, %q) = %v, want %v", test.actual, test.expected, got, test.want)
+		}
+	}
+}
+
 func TestPKCEChallengeIsS256Base64URL(t *testing.T) {
 	if got, want := pkceChallenge("verifier"), "iMnq5o6zALKXGivsnlom_0F5_WYda32GHkxlV7mq7hQ"; got != want {
 		t.Fatalf("pkceChallenge() = %q, want %q", got, want)
