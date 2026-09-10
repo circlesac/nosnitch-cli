@@ -305,6 +305,7 @@ func runUnshare(yes bool) int {
 func runStatus(asJSON bool) int {
 	rep := account.Gather()
 	if id := flagValue("--account"); id != "" {
+		rep.Skipped = nil
 		filtered := rep.Accounts[:0]
 		for _, a := range rep.Accounts {
 			identity := a.Email
