@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -110,7 +111,13 @@ func runAccountCommand() int {
 			}
 		}
 		if id == "" {
-			fmt.Fprintf(os.Stderr, "no logged-in %s session found; authenticate with the provider and retry\n", provider)
+			url := map[string]string{"openai": "https://chatgpt.com/", "anthropic": "https://claude.ai/", "github": "https://github.com/settings/copilot"}[provider]
+			if url != "" {
+				_ = exec.Command("open", url).Start()
+				fmt.Fprintf(os.Stderr, "no logged-in %s session found; opened %s, then retry this command\n", provider, url)
+			} else {
+				fmt.Fprintf(os.Stderr, "no logged-in %s session found; authenticate with the provider and retry\n", provider)
+			}
 			return 2
 		}
 		a := registry.Account{ID: provider + ":" + id, Provider: provider, Email: id, UpdatedAt: time.Now().UTC()}
