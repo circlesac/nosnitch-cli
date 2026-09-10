@@ -113,6 +113,27 @@ func CheckCode() CodeResult {
 		res.Reason = err.Error()
 		return res
 	}
+	settings := checkOAuthToken(token)
+	res.ModelImprovement = settings.ModelImprovement
+	if settings.Reason != "" {
+		res.Reason = settings.Reason
+	}
+	return res
+}
+
+// CheckOAuthToken reads Claude's account-wide model-improvement setting using
+// a caller-provided OAuth access token.
+func CheckOAuthToken(token string) CodeResult {
+	return checkOAuthToken(token)
+}
+
+func checkOAuthToken(token string) CodeResult {
+	res := CodeResult{OK: true}
+	if strings.TrimSpace(token) == "" {
+		res.OK = false
+		res.Reason = "Claude OAuth access token is missing"
+		return res
+	}
 	req, _ := http.NewRequest(http.MethodGet, apiBase+"/api/oauth/account/settings", nil)
 	req.Header = http.Header{
 		"accept":            {"application/json"},
@@ -123,28 +144,28 @@ func CheckCode() CodeResult {
 	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(),
 		tls_client.WithTimeoutSeconds(25), tls_client.WithClientProfile(profiles.Chrome_131))
 	if err != nil {
-		res.Reason = "could not create HTTP client: " + err.Error()
-		return res
+		return CodeResult{Reason: "could not create HTTP client: " + err.Error()}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		res.Reason = "Claude account settings read failed: " + err.Error()
-		return res
+		return CodeResult{Reason: "Claude account settings read failed: " + err.Error()}
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		res.Reason = "Claude account settings read failed (HTTP " + strconv.Itoa(resp.StatusCode) + ")"
-		return res
+		return CodeResult{Reason: "Claude account settings read failed (HTTP " + strconv.Itoa(resp.StatusCode) + ")"}
 	}
 	var settings struct {
 		GroveEnabled *bool `json:"grove_enabled"`
 	}
 	if err := json.Unmarshal(body, &settings); err != nil {
-		res.Reason = "Claude account settings parse error: " + err.Error()
-		return res
+		return CodeResult{Reason: "Claude account settings parse error: " + err.Error()}
 	}
 	res.ModelImprovement = settings.GroveEnabled
+	if settings.GroveEnabled == nil {
+		res.OK = false
+		res.Reason = "Claude account settings did not include model-improvement state"
+	}
 	return res
 }
 
@@ -159,6 +180,15 @@ func OffCode() OffResult {
 	if err != nil {
 		return OffResult{Email: code.Email, Reason: err.Error()}
 	}
+	return OffOAuthToken(token, code.Email)
+}
+
+// OffOAuthToken disables account-wide model improvement using a registered
+// OAuth access token.
+func OffOAuthToken(token, email string) OffResult {
+	if strings.TrimSpace(token) == "" {
+		return OffResult{Email: email, Reason: "Claude OAuth access token is missing"}
+	}
 	req, _ := http.NewRequest(http.MethodPatch, apiBase+"/api/oauth/account/settings",
 		strings.NewReader(`{"grove_enabled":false}`))
 	req.Header = http.Header{
@@ -171,20 +201,20 @@ func OffCode() OffResult {
 	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(),
 		tls_client.WithTimeoutSeconds(25), tls_client.WithClientProfile(profiles.Chrome_131))
 	if err != nil {
-		return OffResult{Email: code.Email, Reason: "could not create HTTP client: " + err.Error()}
+		return OffResult{Email: email, Reason: "could not create HTTP client: " + err.Error()}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return OffResult{Email: code.Email, Reason: "Claude setting update failed: " + err.Error()}
+		return OffResult{Email: email, Reason: "Claude setting update failed: " + err.Error()}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return OffResult{
-			Email:  code.Email,
+			Email:  email,
 			Reason: "Claude setting update failed (HTTP " + strconv.Itoa(resp.StatusCode) + ")",
 		}
 	}
-	return OffResult{OK: true, Email: code.Email}
+	return OffResult{OK: true, Email: email}
 }
 
 // CheckWeb reads account identity and public shared chats through the same
