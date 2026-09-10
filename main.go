@@ -178,8 +178,8 @@ Usage:
   nosnitch account add <provider>       authenticate and register an account
   nosnitch account list                 list registered accounts
   nosnitch account remove <account-id>  remove an account and cached credential
-  nosnitch check --account <account-id>  check one discovered account
-  nosnitch check --all                  check every registered account
+  nosnitch check --account <account-id>  check one account; reauthenticate when needed
+  nosnitch check --all                  check every registered account; reauthenticate when needed
 
 Check exit codes:
   0  clean
@@ -324,7 +324,7 @@ func runStatus(asJSON bool) int {
 		return 2
 	}
 	if accountID != "" || hasFlag("--all") {
-		return runRegisteredStatus(asJSON, accountID)
+		return runRegisteredStatus(asJSON, accountID, !asJSON)
 	}
 	rep := account.Gather()
 	if asJSON {
@@ -337,6 +337,7 @@ func runStatus(asJSON bool) int {
 }
 
 var errBrowserSessionMissing = errors.New("no authenticated browser session found")
+var errRegisteredCredentialMissing = errors.New("registered credential missing")
 
 func normalizeProvider(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
@@ -504,7 +505,7 @@ func flagValue(name string) string {
 	return ""
 }
 
-func runRegisteredStatus(asJSON bool, selector string) int {
+func runRegisteredStatus(asJSON bool, selector string, allowInteractive bool) int {
 	registered, err := registry.Load()
 	if err != nil {
 		rep := account.Report{Skipped: []string{"account registry: " + err.Error()}}
@@ -547,6 +548,9 @@ func runRegisteredStatus(asJSON bool, selector string) int {
 	rep := account.Report{}
 	for _, registeredAccount := range selected {
 		result, checkErr := checkRegisteredAccount(registeredAccount)
+		if allowInteractive && checkErr != nil && shouldReauthenticate(registeredAccount, checkErr) {
+			result, checkErr = reauthenticateAndCheck(registeredAccount)
+		}
 		if result != nil {
 			rep.Accounts = append(rep.Accounts, result)
 		}
@@ -582,7 +586,7 @@ func checkRegisteredAccount(registered registry.Account) (*account.Account, erro
 	}
 	credential, err := registry.LoadCredential(registered.ID)
 	if err != nil {
-		return result, errors.New("authentication required (credential cache missing)")
+		return result, fmt.Errorf("%w: authentication required (credential cache missing)", errRegisteredCredentialMissing)
 	}
 
 	if credential.Kind == "oauth" {
@@ -669,6 +673,160 @@ func checkRegisteredAccount(registered registry.Account) (*account.Account, erro
 		return result, errors.New("credential belongs to a different account")
 	}
 	return result, nil
+}
+
+func shouldReauthenticate(registered registry.Account, err error) bool {
+	if err == nil || (registered.AuthKind != "oauth" && registered.AuthKind != "browser") {
+		return false
+	}
+	if errors.Is(err, errRegisteredCredentialMissing) || errors.Is(err, oauth.ErrReauth) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"authentication required",
+		"credential was rejected",
+		"access token is missing",
+		"oauth credential was rejected",
+		"session expired",
+		"expired session",
+		"cloudflare block",
+		"signed-in github account not found",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func reauthenticateAndCheck(registered registry.Account) (*account.Account, error) {
+	identity := registered.Email
+	if identity == "" {
+		identity = registered.ID
+	}
+	fmt.Fprintf(os.Stderr, "authentication required for %s; sign in in the browser\n", identity)
+
+	switch registered.AuthKind {
+	case "oauth":
+		token, providerIdentity, err := (oauth.Client{}).Login(context.Background(), registered.Provider)
+		if err != nil {
+			return &account.Account{
+				Provider: registered.Provider,
+				Email:    registered.Email,
+				Login:    registered.Email,
+				Sources:  []string{"registered credential"},
+			}, err
+		}
+		if !sameIdentity(registered, providerIdentity.Email, providerIdentity.Subject) {
+			return &account.Account{
+				Provider: registered.Provider,
+				Email:    registered.Email,
+				Login:    registered.Email,
+				Sources:  []string{"registered credential"},
+			}, errors.New("signed-in account does not match the registered account")
+		}
+		credential := registry.Credential{
+			Kind:         "oauth",
+			AccessToken:  token.AccessToken,
+			RefreshToken: token.RefreshToken,
+			IDToken:      token.IDToken,
+			ExpiresAt:    token.ExpiresAt,
+		}
+		if browserCandidates, browserErr := discoverBrowserAccount(registered.Provider); browserErr == nil {
+			for _, candidate := range browserCandidates {
+				if strings.EqualFold(candidate.account.Email, providerIdentity.Email) {
+					credential.Cookies = candidate.credential.Cookies
+					break
+				}
+			}
+		}
+		if err := registry.Register(registered, credential); err != nil {
+			return &account.Account{
+				Provider: registered.Provider,
+				Email:    registered.Email,
+				Sources:  []string{"registered credential"},
+			}, err
+		}
+	case "browser":
+		_, credential, err := waitForRegisteredBrowserAccount(registered)
+		if err != nil {
+			return &account.Account{
+				Provider: registered.Provider,
+				Email:    registered.Email,
+				Login:    registered.Email,
+				Sources:  []string{"registered credential"},
+			}, err
+		}
+		if err := registry.Register(registered, credential); err != nil {
+			return &account.Account{
+				Provider: registered.Provider,
+				Email:    registered.Email,
+				Login:    registered.Email,
+				Sources:  []string{"registered credential"},
+			}, err
+		}
+	default:
+		return &account.Account{
+			Provider: registered.Provider,
+			Email:    registered.Email,
+			Login:    registered.Email,
+			Sources:  []string{"registered credential"},
+		}, errors.New("account authentication cannot be renewed automatically")
+	}
+
+	return checkRegisteredAccount(registered)
+}
+
+func waitForRegisteredBrowserAccount(registered registry.Account) (registry.Account, registry.Credential, error) {
+	match := func(candidates []browserAccountCandidate) (browserAccountCandidate, bool) {
+		for _, candidate := range candidates {
+			if candidate.account.ID == registered.ID ||
+				(registered.Email != "" && strings.EqualFold(candidate.account.Email, registered.Email)) {
+				return candidate, true
+			}
+		}
+		return browserAccountCandidate{}, false
+	}
+
+	candidates, err := discoverBrowserAccount(registered.Provider)
+	if err != nil {
+		return registry.Account{}, registry.Credential{}, err
+	}
+	if candidate, ok := match(candidates); ok {
+		return candidate.account, candidate.credential, nil
+	}
+
+	loginURL := map[string]string{
+		"anthropic": "https://claude.ai/",
+		"github":    "https://github.com/settings/copilot",
+		"openai":    "https://chatgpt.com/",
+	}[registered.Provider]
+	if loginURL == "" {
+		return registry.Account{}, registry.Credential{}, fmt.Errorf("unsupported provider: %s", registered.Provider)
+	}
+	if err := openURL(loginURL); err != nil {
+		return registry.Account{}, registry.Credential{}, fmt.Errorf("open %s login page: %w", registered.Provider, err)
+	}
+	fmt.Fprintf(os.Stderr, "sign in to %s in the browser; waiting for the registered account\n", registered.Provider)
+
+	deadline := time.Now().Add(5 * time.Minute)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		candidates, err = discoverBrowserAccount(registered.Provider)
+		if err != nil {
+			return registry.Account{}, registry.Credential{}, err
+		}
+		if candidate, ok := match(candidates); ok {
+			return candidate.account, candidate.credential, nil
+		}
+		if time.Now().After(deadline) {
+			return registry.Account{}, registry.Credential{},
+				fmt.Errorf("%w for %s before timeout", errBrowserSessionMissing, registered.Email)
+		}
+		<-ticker.C
+	}
 }
 
 func refreshRegisteredCredential(registered registry.Account, credential registry.Credential) (registry.Credential, error) {
