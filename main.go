@@ -14,12 +14,14 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/circlesac/nosnitch-cli/internal/account"
 	"github.com/circlesac/nosnitch-cli/internal/chatgpt"
 	"github.com/circlesac/nosnitch-cli/internal/claude"
 	"github.com/circlesac/nosnitch-cli/internal/cookies"
 	githubprivacy "github.com/circlesac/nosnitch-cli/internal/github"
+	"github.com/circlesac/nosnitch-cli/internal/registry"
 )
 
 func main() {
@@ -46,6 +48,8 @@ func main() {
 		os.Exit(runProviderCommand("anthropic"))
 	case "github":
 		os.Exit(runProviderCommand("github"))
+	case "account":
+		os.Exit(runAccountCommand())
 	case "version", "-v", "--version":
 		fmt.Println("nosnitch", Version)
 	case "help", "-h", "--help":
@@ -67,6 +71,57 @@ func hasFlag(name string) bool {
 		}
 	}
 	return false
+}
+
+func runAccountCommand() int {
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "missing account command")
+		return 2
+	}
+	switch os.Args[2] {
+	case "list":
+		all, e := registry.Load()
+		if e != nil {
+			fmt.Fprintln(os.Stderr, e)
+			return 2
+		}
+		for _, a := range all {
+			fmt.Printf("%s\t%s\t%s\n", a.ID, a.Provider, a.Email)
+		}
+		return 0
+	case "add":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "missing provider")
+			return 2
+		}
+		provider := os.Args[3]
+		fmt.Printf("Authenticate %s, then enter account identity: ", provider)
+		var id string
+		if _, e := fmt.Scanln(&id); e != nil || id == "" {
+			fmt.Fprintln(os.Stderr, "account identity required")
+			return 2
+		}
+		a := registry.Account{ID: provider + ":" + id, Provider: provider, Email: id, UpdatedAt: time.Now().UTC()}
+		if e := registry.Upsert(a); e != nil {
+			fmt.Fprintln(os.Stderr, e)
+			return 2
+		}
+		fmt.Printf("registered %s\n", a.ID)
+		return 0
+	case "remove":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "missing account id")
+			return 2
+		}
+		if e := registry.Remove(os.Args[3]); e != nil {
+			fmt.Fprintln(os.Stderr, e)
+			return 2
+		}
+		return 0
+	default:
+		fmt.Fprintln(os.Stderr, "unknown account command:", os.Args[2])
+		return 2
+	}
 }
 
 func usage() {
@@ -93,6 +148,10 @@ Usage:
       Turn off GitHub Copilot model training.
 
   nosnitch version
+
+  nosnitch account add <provider>       register an account after authentication
+  nosnitch account list                 list registered accounts
+  nosnitch account remove <account-id>  remove an account and cached credential
 
 Check exit codes:
   0  clean
