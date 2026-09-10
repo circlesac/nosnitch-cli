@@ -237,9 +237,43 @@ func OffWith(jar map[string]string) OffResult {
 		return OffResult{Reason: "could not read account id from session", Email: email}
 	}
 
+	return offWithAccess(client, cookieHeader, accountID, jar["oai-did"], access, email)
+}
+
+// OffWithAccessToken opts an account out of every training flag using a
+// registered OAuth access token. OAuth credentials that can read the settings
+// endpoint can use the same account-setting PATCH without browser cookies.
+func OffWithAccessToken(accessToken string) OffResult {
+	if strings.TrimSpace(accessToken) == "" {
+		return OffResult{Reason: "OpenAI access token is missing"}
+	}
+	accountID := jwtAccountID(accessToken)
+	if accountID == "" {
+		return OffResult{Reason: "could not read account id from OAuth token"}
+	}
+	for _, name := range passProfiles {
+		prof, ok := profiles.MappedTLSClients[name]
+		if !ok {
+			continue
+		}
+		client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(),
+			tls_client.WithTimeoutSeconds(25), tls_client.WithClientProfile(prof))
+		if err != nil {
+			continue
+		}
+		status, _ := get(client, "https://chatgpt.com/backend-api/settings/user", "", accessToken)
+		if status != 200 {
+			continue
+		}
+		return offWithAccess(client, "", accountID, "", accessToken, "")
+	}
+	return OffResult{Reason: "OpenAI OAuth credential was rejected or web settings require a browser session"}
+}
+
+func offWithAccess(client tls_client.HttpClient, cookieHeader, accountID, deviceID, access, email string) OffResult {
 	res := OffResult{OK: true, Email: email, Results: map[string]string{}}
 	for _, f := range TrainingFeatures {
-		status, body := patchSetting(client, cookieHeader, accountID, jar["oai-did"], access, f.Key)
+		status, body := patchSetting(client, cookieHeader, accountID, deviceID, access, f.Key)
 		if status == 200 && strings.Contains(body, `"`+f.Key+`":false`) {
 			res.Results[f.Key] = "off"
 		} else {

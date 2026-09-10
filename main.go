@@ -733,8 +733,11 @@ func runOff(yes bool) int {
 		return 0
 	}
 	openAIOutcome := turnOffOpenAI("nosnitch off")
+	registeredClaudeOutcome := turnOffRegisteredOAuth("anthropic")
+	registeredOpenAIOutcome := turnOffRegisteredOAuth("openai")
 	githubOutcome := turnOffGitHub("nosnitch off")
-	return finishOff(mergeOutcomes(claudeOutcome, openAIOutcome, githubOutcome),
+	return finishOff(mergeOutcomes(claudeOutcome, openAIOutcome, registeredClaudeOutcome,
+		registeredOpenAIOutcome, githubOutcome),
 		"training and public-sharing exposure turned off")
 }
 
@@ -744,7 +747,10 @@ func runOpenAIOff(yes bool) int {
 	}
 	fmt.Println(c("nosnitch", bold), c("· turning off OpenAI Account training…", dim))
 	fmt.Println()
-	return finishOff(turnOffOpenAI("nosnitch openai training"),
+	return finishOff(mergeOutcomes(
+		turnOffOpenAI("nosnitch openai training"),
+		turnOffRegisteredOAuth("openai"),
+	),
 		"OpenAI Account training turned off")
 }
 
@@ -755,21 +761,26 @@ func runClaudeTrainingOff(yes bool) int {
 	fmt.Println(c("nosnitch", bold), c("· turning off Claude Account training…", dim))
 	fmt.Println()
 	result := claude.OffCode()
+	outcome := offOutcome{}
 	if !result.OK {
 		if result.Email == "" {
 			fmt.Println(c("  no Claude Code account could be updated", yel))
-			return 2
+			outcome.indeterminate = true
+		} else {
+			fmt.Println(c("  ✗ Claude model improvement: "+result.Reason, red))
+			outcome.failed = true
 		}
-		fmt.Println(c("  ✗ Claude model improvement: "+result.Reason, red))
-		return 1
+	} else {
+		fmt.Println("  " + c("[Claude Account]", bold))
+		field("Account", result.Email, "", "")
+		field("Discovered via", "Claude Code", "", "")
+		field("Model improvement", "OFF", grn, "")
+		fmt.Println()
+		outcome.acted = true
 	}
-	fmt.Println("  " + c("[Claude Account]", bold))
-	field("Account", result.Email, "", "")
-	field("Discovered via", "Claude Code", "", "")
-	field("Model improvement", "OFF", grn, "")
-	fmt.Println()
-	fmt.Println(c("  ✓ Claude Account training turned off", grn))
-	return 0
+	registered := turnOffRegisteredOAuth("anthropic")
+	outcome = mergeOutcomes(outcome, registered)
+	return finishOff(outcome, "Claude Account training turned off")
 }
 
 func runGitHubTrainingOff(yes bool) int {
@@ -893,6 +904,88 @@ func turnOffOpenAI(retryCommand string) offOutcome {
 		outcome.indeterminate = true
 	}
 	return outcome
+}
+
+// turnOffRegisteredOAuth updates every explicitly registered OAuth account.
+// Browser-backed accounts are handled separately above; accounts whose OAuth
+// token can read settings are updated here so `off` covers the full registry.
+func turnOffRegisteredOAuth(provider string) offOutcome {
+	outcome := offOutcome{}
+	registered, err := registry.Load()
+	if err != nil {
+		fmt.Println(c("  ! registered accounts could not be read: "+err.Error(), yel))
+		outcome.indeterminate = true
+		return outcome
+	}
+	for _, account := range registered {
+		if account.Provider != provider {
+			continue
+		}
+		credential, err := registry.LoadCredential(account.ID)
+		if err != nil || credential.Kind != "oauth" {
+			continue
+		}
+		credential, err = refreshRegisteredCredential(account, credential)
+		if err != nil {
+			fmt.Println(c("  ! "+account.ID+": "+err.Error(), yel))
+			outcome.indeterminate = true
+			continue
+		}
+
+		switch provider {
+		case "anthropic":
+			checked := claude.CheckOAuthToken(credential.AccessToken)
+			if checked.OK && checked.ModelImprovement != nil && !*checked.ModelImprovement {
+				continue
+			}
+			updated := claude.OffOAuthToken(credential.AccessToken, account.Email)
+			if !updated.OK {
+				fmt.Println(c("  ✗ "+account.Email+" Claude model improvement: "+updated.Reason, red))
+				outcome.failed = true
+				continue
+			}
+			outcome.acted = true
+			fmt.Println("  " + c("[Claude Account]", bold))
+			field("Account", account.Email, "", "")
+			field("Discovered via", "registered credential", "", "")
+			field("Model improvement", "OFF", grn, "")
+			fmt.Println()
+		case "openai":
+			checked := chatgpt.CheckWithAccessToken(credential.AccessToken)
+			if checked.OK && !hasEnabledTraining(checked.Training) {
+				continue
+			}
+			updated := chatgpt.OffWithAccessToken(credential.AccessToken)
+			if !updated.OK {
+				fmt.Println(c("  ✗ "+account.Email+" OpenAI training: "+updated.Reason, red))
+				outcome.failed = true
+				continue
+			}
+			outcome.acted = true
+			fmt.Println("  " + c("[OpenAI Account]", bold))
+			field("Account", account.Email, "", "")
+			field("Discovered via", "registered credential", "", "")
+			for _, feature := range chatgpt.TrainingFeatures {
+				state := updated.Results[feature.Key]
+				col := grn
+				if state != "off" {
+					col = red
+				}
+				field(feature.Label, state, col, "")
+			}
+			fmt.Println()
+		}
+	}
+	return outcome
+}
+
+func hasEnabledTraining(values map[string]*bool) bool {
+	for _, value := range values {
+		if value != nil && *value {
+			return true
+		}
+	}
+	return false
 }
 
 func turnOffGitHub(retryCommand string) offOutcome {
