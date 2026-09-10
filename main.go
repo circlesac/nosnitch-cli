@@ -79,26 +79,6 @@ func runAccountCommand() int {
 		return 2
 	}
 	switch os.Args[2] {
-	case "sync":
-		rep := account.Gather()
-		var discovered []registry.Account
-		for _, a := range rep.Accounts {
-			identity := a.Email
-			if identity == "" {
-				identity = a.Login
-			}
-			if identity == "" {
-				continue
-			}
-			discovered = append(discovered, registry.Account{ID: a.Provider + ":" + identity, Provider: a.Provider, Email: identity})
-		}
-		n, err := registry.Sync(discovered)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
-		fmt.Printf("registered %d new account(s) from %d discovered account(s)\n", n, len(discovered))
-		return 0
 	case "list":
 		all, e := registry.Load()
 		if e != nil {
@@ -171,7 +151,6 @@ Usage:
 
   nosnitch account add <provider>       register an account after authentication
   nosnitch account list                 list registered accounts
-  nosnitch account sync                 register identities from local sessions
   nosnitch account remove <account-id>  remove an account and cached credential
 
 Check exit codes:
