@@ -98,3 +98,31 @@ func Remove(id string) error {
 	return nil
 }
 func CredentialPath(id string) string { return credentialPath(id) }
+
+// Sync merges identities discovered by the existing read-only provider checks.
+// It never stores tokens; authentication adapters may populate CredentialPath
+// later using the same stable account ID.
+func Sync(discovered []Account) (int, error) {
+	all, err := Load()
+	if err != nil {
+		return 0, err
+	}
+	seen := map[string]bool{}
+	for _, a := range all {
+		seen[a.ID] = true
+	}
+	added := 0
+	for _, a := range discovered {
+		if a.ID == "" || seen[a.ID] {
+			continue
+		}
+		a.UpdatedAt = time.Now().UTC()
+		all = append(all, a)
+		seen[a.ID] = true
+		added++
+	}
+	if added == 0 {
+		return 0, nil
+	}
+	return added, Save(all)
+}

@@ -46,3 +46,18 @@ func TestRemoveDeletesCredentialFile(t *testing.T) {
 		t.Fatalf("credential was not removed: %v", err)
 	}
 }
+
+func TestSyncIsIdempotent(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	accounts := []Account{{ID: "openai:alice@example.com", Provider: "openai", Email: "alice@example.com"}}
+	if n, err := Sync(accounts); err != nil || n != 1 {
+		t.Fatalf("first Sync = %d, %v", n, err)
+	}
+	if n, err := Sync(accounts); err != nil || n != 0 {
+		t.Fatalf("second Sync = %d, %v", n, err)
+	}
+	all, err := Load()
+	if err != nil || len(all) != 1 {
+		t.Fatalf("Load = %#v, %v", all, err)
+	}
+}
