@@ -165,6 +165,7 @@ Usage:
   nosnitch account list                 list registered accounts
   nosnitch account remove <account-id>  remove an account and cached credential
   nosnitch check --account <account-id>  check one discovered account
+  nosnitch check --all                  check every registered account
 
 Check exit codes:
   0  clean
@@ -304,6 +305,26 @@ func runUnshare(yes bool) int {
 
 func runStatus(asJSON bool) int {
 	rep := account.Gather()
+	if hasFlag("--all") {
+		registered, err := registry.Load()
+		if err != nil {
+			rep.Skipped = append(rep.Skipped, "account registry: "+err.Error())
+		} else {
+			found := map[string]bool{}
+			for _, a := range rep.Accounts {
+				identity := a.Email
+				if identity == "" {
+					identity = a.Login
+				}
+				found[a.Provider+":"+identity] = true
+			}
+			for _, a := range registered {
+				if !found[a.ID] {
+					rep.Skipped = append(rep.Skipped, a.ID+": no active authenticated session")
+				}
+			}
+		}
+	}
 	if id := flagValue("--account"); id != "" {
 		rep.Skipped = nil
 		filtered := rep.Accounts[:0]
